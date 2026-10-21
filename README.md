@@ -4,7 +4,13 @@
 
 An end-to-end, production-style project modelled on Sainsbury's **Nectar Prices**: real grocery transaction data, a randomised offer experiment layered on top, uplift models, a budget-constrained offer optimiser, a scoring API and monitoring.
 
-> Status: **Week 3 complete** — ingestion, dbt warehouse (14 models, 42 data tests), EDA, RFM segmentation, offer funnel, and a validated randomised offer-experiment simulator.
+> Status: **v1 (weeks 1–6) complete** — data pipeline, dbt warehouse, analysis, randomised offer experiment, and six targeting models compared with honest model selection.
+
+## Headline result
+
+On a held-out test set, **uplift targeting turns a loss-making offer programme profitable**. The selected model (X-learner) earns +$107 of incremental profit where blanket offers lose $209 and a "likely buyer" model loses $777. The best model captures 77% of the best possible profit. The champion was chosen on validation data without access to the ground truth.
+
+![Model comparison](reports/figures/14_model_comparison.png)
 
 ## Why uplift, not "who is likely to buy"
 
@@ -88,14 +94,44 @@ Because the real campaigns were not randomised, `src/nectar/simulate/simulator.p
 
 Full validation: [`notebooks/03_offer_experiment.ipynb`](notebooks/03_offer_experiment.ipynb).
 
+## Weeks 4–6: feature contract, uplift models and selection
+
+- **Feature contract** (`features/schema.py`, Pandera): types, ranges, uniqueness and known offers are checked before training and scoring.
+- **Models** (`models/learners.py`), all behind one `fit / score` interface and predicting *incremental gross profit*:
+  random (blanket) · response model P(buy | offer) · T-, S-, X-, DR-learner · causal forest · ensemble. LightGBM base learners via EconML.
+- **Protocol** (`models/train.py`): member-level 50/25/25 split. The champion is chosen on **validation** using an inverse-propensity-weighted estimate of incremental profit from observed outcomes only. Every run is logged to MLflow (`make mlflow-ui`).
+- **Decision rule:** offer when predicted incremental profit > 0. Baselines offer to their top 20%.
+
+| Model (test set) | Share offered | Observed incremental profit | True incremental profit | Share of best possible |
+|---|---|---|---|---|
+| Response model | 20% | −$994 | −$777 | — |
+| Random (blanket) | 20% | −$225 | −$209 | — |
+| T-learner | 36% | −$138 | $12 | 7% |
+| DR-learner | 25% | $92 | $78 | 43% |
+| S-learner | 20% | $64 | $104 | 58% |
+| **X-learner (champion)** | 28% | $113 | $107 | 60% |
+| Ensemble | 22% | $110 | $120 | 67% |
+| Causal forest | 18% | $110 | $138 | 77% |
+
+**What to take from it**
+- Targeting "likely buyers" is the worst option: they buy anyway, so the discount is pure margin loss.
+- Uplift models make money by holding back offers from habitual category buyers. Weekly category spend is the strongest signal (surrogate tree, R² 0.89).
+- **Selection is uncertain:** validation 95% intervals for the top models overlap (chart below). The causal forest was truly best but not distinguishable on validation. The X-learner stays the champion because changing it after seeing test results would be selection on the test set. In production this argues for a larger test or a champion/challenger split.
+
+![Selection uncertainty](reports/figures/16_selection_uncertainty.png)
+
+Full analysis: [`notebooks/04_uplift_models.ipynb`](notebooks/04_uplift_models.ipynb).
+
 ## Quick start
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev,ml]"
 # put the 8 Complete Journey CSVs in data/raw/
 make ingest      # CSV -> typed Parquet + DuckDB warehouse (~20s)
 make dbt         # build and test the staging + mart models (~10s)
 make simulate    # generate the randomised offer experiment (~6s)
+make train       # train, compare and select models, log to MLflow (~1 min)
+make mlflow-ui   # browse experiment runs
 make test        # data-quality contract, mart checks, unit tests
 make eda         # re-run the analysis notebooks
 make dbt-docs    # browse model documentation and lineage
@@ -109,10 +145,14 @@ make dbt-docs    # browse model documentation and lineage
 │   ├── config.py, viz.py    # paths, shared chart style
 │   ├── features/offer_features.py   # point-in-time member x category features
 │   ├── simulate/simulator.py        # randomised experiment with known ground truth
-│   ├── models/ evaluate/ optimise/ serving/ monitoring/   # upcoming weeks
+│   ├── features/schema.py           # Pandera feature contract + model matrix
+│   ├── models/learners.py, train.py # uplift learners, training + selection + MLflow
+│   ├── evaluate/metrics.py          # IPW policy value, uplift curves, oracle share
+│   ├── optimise/ serving/ monitoring/   # upcoming weeks
 ├── dbt/                     # staging, facts, dims, RFM mart + 42 data tests
-├── notebooks/               # 01_eda, 02_segments_and_funnel, 03_offer_experiment
-├── tests/                   # data quality, marts, simulator validity, unit tests (35)
+├── notebooks/               # 01 EDA · 02 segments & funnel · 03 experiment · 04 uplift models
+├── tests/                   # data quality, marts, simulator, schema, metrics, learners (55)
+├── models/                  # champion.json, model_comparison.csv (+ champion.joblib, generated)
 ├── reports/figures/         # charts used in README and write-up
 ├── pipelines/ dashboards/ docs/
 └── .github/workflows/ci.yml # ruff + pytest on every push
@@ -125,9 +165,9 @@ make dbt-docs    # browse model documentation and lineage
 | 1 ✅ | Repo, ingestion, data-quality tests, EDA |
 | 2 ✅ | dbt staging and marts, RFM segmentation, offer funnel |
 | 3 ✅ | Randomised offer simulator with known ground-truth uplift |
-| 4 | Feature pipeline with validation, time-based split |
-| 5 | Propensity baseline + T-learner, MLflow tracking |
-| 6 | X / DR-learner, causal forest, Qini and profit curves (**v1**) |
+| 4 ✅ | Feature pipeline with validation, member-level split |
+| 5 ✅ | Response-model baseline + T-learner, MLflow tracking |
+| 6 ✅ | S / X / DR-learner, causal forest, ensemble, uplift and profit curves (**v1**) |
 | 7 | Budget-constrained offer optimiser |
 | 8 | FastAPI scoring service in Docker |
 | 9 | Prefect pipeline, CI/CD, drift monitoring |
