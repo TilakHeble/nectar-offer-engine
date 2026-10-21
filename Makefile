@@ -1,4 +1,4 @@
-.PHONY: install ingest eda test lint all clean
+.PHONY: install ingest dbt dbt-docs eda test lint all clean
 
 RAW_DIR ?= data/raw
 
@@ -8,9 +8,15 @@ install:
 ingest:
 	python -m nectar.ingest.load_raw --raw-dir $(RAW_DIR)
 
+dbt:
+	cd dbt && dbt build --profiles-dir .
+
+dbt-docs:
+	cd dbt && dbt docs generate --profiles-dir . && dbt docs serve --profiles-dir .
+
 eda:
-	python -m nectar.eda_report
 	jupyter nbconvert --to notebook --execute --inplace notebooks/01_eda.ipynb
+	jupyter nbconvert --to notebook --execute --inplace notebooks/02_segments_and_funnel.ipynb
 
 test:
 	pytest -q
@@ -18,7 +24,7 @@ test:
 lint:
 	ruff check src tests
 
-all: ingest test eda
+all: ingest dbt test eda
 
 clean:
 	rm -rf data/processed/*.parquet data/warehouse/*.duckdb

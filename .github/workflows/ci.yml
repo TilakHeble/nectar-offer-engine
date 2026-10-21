@@ -15,5 +15,9 @@ jobs:
           python-version: "3.11"
       - run: pip install -e ".[dev]"
       - run: ruff check src tests
+      - name: dbt parse (compiles every model and test without data)
+        run: cd dbt && dbt parse --profiles-dir .
+        env:
+          NECTAR_WAREHOUSE: /tmp/ci.duckdb
       # Data tests skip automatically when the warehouse has not been built (raw data is not committed).
       - run: pytest -q

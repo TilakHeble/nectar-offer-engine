@@ -1,0 +1,28 @@
+name: nectar
+version: "0.2.0"
+config-version: 2
+profile: nectar
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages", "logs"]
+
+vars:
+  # Panel ramp-up ends in week 16 (see notebooks/01_eda.ipynb); analysis windows start after it.
+  first_stable_day: 113
+  first_stable_week: 17
+  last_full_week: 101
+  last_day: 711
+  # RFM looks back 52 weeks from the last day of data.
+  rfm_window_days: 364
+
+models:
+  nectar:
+    staging:
+      +schema: staging
+      +materialized: view
+    marts:
+      +schema: marts
+      +materialized: table

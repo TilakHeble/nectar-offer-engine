@@ -1,0 +1,7 @@
+nectar:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('NECTAR_WAREHOUSE', '../data/warehouse/nectar.duckdb') }}"
+      threads: 4

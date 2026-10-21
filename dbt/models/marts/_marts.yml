@@ -1,0 +1,83 @@
+version: 2
+
+models:
+  - name: fct_line
+    description: Grocery basket lines (fuel, misc, returns and voids removed) with product attributes.
+    columns:
+      - name: basket_id
+        data_tests: [not_null]
+      - name: sales_value
+        data_tests:
+          - positive_values
+
+  - name: fct_basket
+    description: One row per shopping trip.
+    columns:
+      - name: basket_id
+        data_tests: [unique, not_null]
+      - name: basket_value
+        data_tests: [positive_values]
+      - name: private_label_share
+        data_tests:
+          - between:
+              arguments: {min_value: 0, max_value: 1}
+
+  - name: fct_member_week
+    description: Dense member x week panel (weeks 17-101), zero rows for weeks with no shopping.
+    data_tests:
+      - unique_combination:
+          arguments:
+            columns: [member_id, week_no]
+
+  - name: dim_member
+    description: One row per member with lifetime behaviour, offer history and demographics.
+    columns:
+      - name: member_id
+        data_tests: [unique, not_null]
+      - name: member_discount_rate
+        data_tests:
+          - between:
+              arguments: {min_value: 0, max_value: 1}
+
+  - name: dim_product
+    columns:
+      - name: product_id
+        data_tests: [unique, not_null]
+
+  - name: mart_member_rfm
+    description: 52-week RFM scores (1-5) and named segment per member.
+    columns:
+      - name: member_id
+        data_tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_member')
+                field: member_id
+      - name: r_score
+        data_tests:
+          - between:
+              arguments: {min_value: 1, max_value: 5}
+      - name: f_score
+        data_tests:
+          - between:
+              arguments: {min_value: 1, max_value: 5}
+      - name: m_score
+        data_tests:
+          - between:
+              arguments: {min_value: 1, max_value: 5}
+      - name: segment
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["Champions", "Potential loyalists", "Recent, low value", "Loyal",
+                         "Needs attention", "About to sleep", "At risk", "Hibernating", "Lost"]
+
+  - name: fct_member_campaign
+    description: Member x campaign offer funnel for targeted members and window shoppers.
+    data_tests:
+      - unique_combination:
+          arguments:
+            columns: [member_id, campaign_id]

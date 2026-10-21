@@ -4,7 +4,7 @@
 
 An end-to-end, production-style project modelled on Sainsbury's **Nectar Prices**: real grocery transaction data, a randomised offer experiment layered on top, uplift models, a budget-constrained offer optimiser, a scoring API and monitoring.
 
-> Status: **Week 1 complete** — repo, ingestion pipeline, data-quality tests, exploratory analysis.
+> Status: **Week 2 complete** — ingestion, dbt warehouse (14 models, 42 data tests), EDA, RFM segmentation and offer-funnel analysis.
 
 ## Why uplift, not "who is likely to buy"
 
@@ -41,14 +41,41 @@ Real Nectar data is not public. Because historical campaigns were not randomised
 
 Full analysis: [`notebooks/01_eda.ipynb`](notebooks/01_eda.ipynb) (HTML export in `reports/`).
 
+## Week 2: warehouse, segments and the offer funnel
+
+**dbt data model** (`dbt/`, DuckDB). Every model is tested: uniqueness, relationships, value ranges, and reconciliation checks such as "panel spend equals basket spend to the cent".
+
+| Layer | Model | Grain |
+|---|---|---|
+| Staging | `stg_transactions`, `stg_products`, `stg_households`, `stg_campaigns`, `stg_campaign_members`, `stg_coupons`, `stg_coupon_redemptions` | Cleaned, renamed source tables |
+| Facts | `fct_line` | Grocery basket line |
+| | `fct_basket` | Shopping trip |
+| | `fct_member_week` | Member × week (dense, weeks 17–101, zeros included) |
+| | `fct_member_campaign` | Member × campaign offer funnel |
+| Dimensions | `dim_member`, `dim_product` | Member / product |
+| Analytics | `mart_member_rfm` | Member: 52-week RFM scores and segment |
+
+![Segment value](reports/figures/07_segment_value.png)
+
+| # | Finding | Implication |
+|---|---|---|
+| 1 | Champions are 26% of members and 50% of 52-week spend; with Loyal, 38% of members and 71% of spend | Blanket offers to them leak the most margin |
+| 2 | 77% of targeted members bought an offer product, but only 12% redeemed a coupon | Buying promoted products is mostly not driven by the coupon |
+| 3 | 84% of *untargeted* shoppers bought Type A offer products anyway | Redemption and purchase rates overstate offer impact |
+| 4 | Redemption rate is 8% for the lightest pre-campaign spend quintile, 17% for the heaviest | A propensity model would chase heavy shoppers who need offers least |
+
+Full analysis: [`notebooks/02_segments_and_funnel.ipynb`](notebooks/02_segments_and_funnel.ipynb).
+
 ## Quick start
 
 ```bash
 pip install -e ".[dev]"
 # put the 8 Complete Journey CSVs in data/raw/
 make ingest      # CSV -> typed Parquet + DuckDB warehouse (~20s)
-make test        # data-quality contract + unit tests
-make eda         # re-run the EDA notebook
+make dbt         # build and test the staging + mart models (~10s)
+make test        # data-quality contract, mart checks, unit tests
+make eda         # re-run the analysis notebooks
+make dbt-docs    # browse model documentation and lineage
 ```
 
 ## Repository layout
@@ -58,10 +85,11 @@ make eda         # re-run the EDA notebook
 │   ├── ingest/load_raw.py   # typed, renamed CSV -> Parquet -> DuckDB
 │   ├── config.py, viz.py    # paths, shared chart style
 │   ├── simulate/ features/ models/ evaluate/ optimise/ serving/ monitoring/   # upcoming weeks
-├── notebooks/01_eda.ipynb
-├── tests/                   # data-quality contract + ingestion unit tests
+├── dbt/                     # staging, facts, dims, RFM mart + 42 data tests
+├── notebooks/               # 01_eda, 02_segments_and_funnel
+├── tests/                   # data-quality contract, mart checks, unit tests
 ├── reports/figures/         # charts used in README and write-up
-├── dbt/ pipelines/ dashboards/ docs/
+├── pipelines/ dashboards/ docs/
 └── .github/workflows/ci.yml # ruff + pytest on every push
 ```
 
@@ -70,7 +98,7 @@ make eda         # re-run the EDA notebook
 | Week | Deliverable |
 |---|---|
 | 1 ✅ | Repo, ingestion, data-quality tests, EDA |
-| 2 | dbt staging and marts, RFM segmentation, redemption funnel |
+| 2 ✅ | dbt staging and marts, RFM segmentation, offer funnel |
 | 3 | Randomised offer simulator with known ground-truth uplift |
 | 4 | Feature pipeline with validation, time-based split |
 | 5 | Propensity baseline + T-learner, MLflow tracking |
