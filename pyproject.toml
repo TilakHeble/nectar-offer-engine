@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nectar-offer-engine"
+version = "0.1.0"
+description = "Uplift-based personalised offer engine for a Nectar-style loyalty programme"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "duckdb>=1.0",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "numpy>=1.26",
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-cov", "ruff>=0.5", "pre-commit", "jupyter", "nbconvert"]
+ml = ["scikit-learn>=1.4", "lightgbm>=4.0", "econml", "causalml", "mlflow", "pandera"]
+serve = ["fastapi", "uvicorn", "pydantic>=2"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
