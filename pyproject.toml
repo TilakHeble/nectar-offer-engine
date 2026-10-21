@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nectar-offer-engine"
-version = "0.2.0"
+version = "0.3.0"
 description = "Uplift-based personalised offer engine for a Nectar-style loyalty programme"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,11 +15,13 @@ dependencies = [
     "numpy>=1.26",
     "matplotlib>=3.8",
     "seaborn>=0.13",
+    "scipy>=1.11",
+    "scikit-learn>=1.4",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-cov", "ruff>=0.5", "pre-commit", "jupyter", "nbconvert", "ipywidgets", "dbt-duckdb>=1.9"]
-ml = ["scikit-learn>=1.4", "lightgbm>=4.0", "econml", "causalml", "mlflow", "pandera"]
+ml = ["lightgbm>=4.0", "econml", "causalml", "mlflow", "pandera"]
 serve = ["fastapi", "uvicorn", "pydantic>=2"]
 
 [tool.setuptools.packages.find]

@@ -56,3 +56,14 @@ def save(fig, name: str) -> None:
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     fig.savefig(FIGURES_DIR / f"{name}.png")
     plt.close(fig)
+
+
+def money(decimals: int = 0):
+    """Tick formatter that writes -$1,000 as −$1,000 (minus before the currency sign)."""
+    from matplotlib.ticker import FuncFormatter
+
+    def fmt(x, _pos=None):
+        sign = "\u2212" if x < 0 else ""
+        return f"{sign}${abs(x):,.{decimals}f}"
+
+    return FuncFormatter(fmt)

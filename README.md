@@ -4,7 +4,7 @@
 
 An end-to-end, production-style project modelled on Sainsbury's **Nectar Prices**: real grocery transaction data, a randomised offer experiment layered on top, uplift models, a budget-constrained offer optimiser, a scoring API and monitoring.
 
-> Status: **Week 2 complete** — ingestion, dbt warehouse (14 models, 42 data tests), EDA, RFM segmentation and offer-funnel analysis.
+> Status: **Week 3 complete** — ingestion, dbt warehouse (14 models, 42 data tests), EDA, RFM segmentation, offer funnel, and a validated randomised offer-experiment simulator.
 
 ## Why uplift, not "who is likely to buy"
 
@@ -66,6 +66,28 @@ Full analysis: [`notebooks/01_eda.ipynb`](notebooks/01_eda.ipynb) (HTML export i
 
 Full analysis: [`notebooks/02_segments_and_funnel.ipynb`](notebooks/02_segments_and_funnel.ipynb).
 
+## Week 3: the randomised offer experiment
+
+Because the real campaigns were not randomised, `src/nectar/simulate/simulator.py` runs a **randomised experiment on top of the real members**:
+
+- 2,407 active members × 18 category offers (10/20/30% off, 4 weeks) = 43,326 member-offer pairs, each randomly assigned to offer or control (50/50).
+- **Baseline buying is calibrated to reality:** a logistic model fitted on what members really bought in weeks 92–95 (cross-validated AUC 0.84). The simulated control group matches the real purchase rate offer by offer, within 3 percentage points.
+- **The true effect is known:** each pair's uplift comes from a documented persuadability function (price sensitivity, category familiarity, lapsed buying, spend level, discount depth, plus an unobserved member effect). Ground truth is stored in `gt_` columns that models never see.
+- **No leakage:** features use weeks 17–91 only. A test rebuilds them on data truncated at week 92 and checks they are identical.
+- **Economics:** 30% gross margin, half of each discount funded by the brand (stated assumptions in `SimConfig`).
+
+![Targeting economics](reports/figures/13_targeting_economics.png)
+
+| Check | Result |
+|---|---|
+| Balance | All standardised mean differences < 0.05 |
+| A/B recovery | Difference in means recovers the true uplift (4.0 pts) and true profit effect within the 95% CI |
+| Offers on average | +4 pts conversion, but they **lose money** when sent to everyone |
+| Who moves | Uplift peaks among occasional buyers; the 10% most likely buyers move by only 0.6 pts |
+| The prize | Perfect uplift targeting turns −$4,097 (offer everyone) into +$658 (offer 19% of pairs); propensity targeting does worse than random |
+
+Full validation: [`notebooks/03_offer_experiment.ipynb`](notebooks/03_offer_experiment.ipynb).
+
 ## Quick start
 
 ```bash
@@ -73,6 +95,7 @@ pip install -e ".[dev]"
 # put the 8 Complete Journey CSVs in data/raw/
 make ingest      # CSV -> typed Parquet + DuckDB warehouse (~20s)
 make dbt         # build and test the staging + mart models (~10s)
+make simulate    # generate the randomised offer experiment (~6s)
 make test        # data-quality contract, mart checks, unit tests
 make eda         # re-run the analysis notebooks
 make dbt-docs    # browse model documentation and lineage
@@ -84,10 +107,12 @@ make dbt-docs    # browse model documentation and lineage
 ├── src/nectar/
 │   ├── ingest/load_raw.py   # typed, renamed CSV -> Parquet -> DuckDB
 │   ├── config.py, viz.py    # paths, shared chart style
-│   ├── simulate/ features/ models/ evaluate/ optimise/ serving/ monitoring/   # upcoming weeks
+│   ├── features/offer_features.py   # point-in-time member x category features
+│   ├── simulate/simulator.py        # randomised experiment with known ground truth
+│   ├── models/ evaluate/ optimise/ serving/ monitoring/   # upcoming weeks
 ├── dbt/                     # staging, facts, dims, RFM mart + 42 data tests
-├── notebooks/               # 01_eda, 02_segments_and_funnel
-├── tests/                   # data-quality contract, mart checks, unit tests
+├── notebooks/               # 01_eda, 02_segments_and_funnel, 03_offer_experiment
+├── tests/                   # data quality, marts, simulator validity, unit tests (35)
 ├── reports/figures/         # charts used in README and write-up
 ├── pipelines/ dashboards/ docs/
 └── .github/workflows/ci.yml # ruff + pytest on every push
@@ -99,7 +124,7 @@ make dbt-docs    # browse model documentation and lineage
 |---|---|
 | 1 ✅ | Repo, ingestion, data-quality tests, EDA |
 | 2 ✅ | dbt staging and marts, RFM segmentation, offer funnel |
-| 3 | Randomised offer simulator with known ground-truth uplift |
+| 3 ✅ | Randomised offer simulator with known ground-truth uplift |
 | 4 | Feature pipeline with validation, time-based split |
 | 5 | Propensity baseline + T-learner, MLflow tracking |
 | 6 | X / DR-learner, causal forest, Qini and profit curves (**v1**) |
