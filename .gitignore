@@ -26,3 +26,6 @@ dbt/.user.yml
 mlflow.db
 mlartifacts/
 models/*.joblib
+artifacts/
+artifacts.tmp/
+build/

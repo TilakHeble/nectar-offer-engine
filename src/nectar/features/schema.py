@@ -7,6 +7,7 @@ used at training and at scoring time.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pandera.pandas as pa
 
@@ -68,11 +69,22 @@ def validate_features(df: pd.DataFrame) -> pd.DataFrame:
     return FEATURE_SCHEMA.validate(df, lazy=True)
 
 
+MODEL_COLUMNS = NUMERIC_FEATURES + BOOL_FEATURES + [f"offer_{oid}" for oid in OFFER_IDS]
+
+
 def model_matrix(df: pd.DataFrame) -> pd.DataFrame:
-    """Numeric features + boolean flags + one-hot offer (fixed column order, all offers present)."""
-    X = df[NUMERIC_FEATURES].astype(float).copy()
-    for col in BOOL_FEATURES:
-        X[col] = df[col].astype(float)
-    for oid in OFFER_IDS:
-        X[f"offer_{oid}"] = (df.offer_id == oid).astype(float)
-    return X
+    """Numeric features + boolean flags + one-hot offer (fixed column order, all offers present).
+
+    Built as one numpy array: column-by-column pandas assignment costs ~18 ms per call, which
+    dominates single-row API latency.
+    """
+    offers = df.offer_id.to_numpy()
+    onehot = (offers[:, None] == np.array(OFFER_IDS)[None, :]).astype(float)
+    values = np.hstack(
+        [
+            df[NUMERIC_FEATURES].to_numpy(dtype=float),
+            df[BOOL_FEATURES].to_numpy(dtype=float),
+            onehot,
+        ]
+    )
+    return pd.DataFrame(values, columns=MODEL_COLUMNS, index=df.index)

@@ -6,7 +6,7 @@
 
 An end-to-end, production-style project modelled on Sainsbury's **Nectar Prices**: real grocery transaction data, a randomised offer experiment layered on top, uplift models, a budget-constrained offer optimiser, a scoring API and monitoring.
 
-> Status: **weeks 1–7 complete**: data pipeline, dbt warehouse, analysis, randomised offer experiment, uplift models with honest selection, and a budget-constrained offer optimiser.
+> Status: **weeks 1–8 complete**: data pipeline, dbt warehouse, analysis, randomised offer experiment, uplift models with honest selection, a budget-constrained offer optimiser, and a containerised offer API.
 
 ## Headline result
 
@@ -144,16 +144,55 @@ Model scores say which offers pay; the optimiser (`optimise/`) decides which to 
 
 Full analysis: [`notebooks/05_offer_allocation.ipynb`](notebooks/05_offer_allocation.ipynb).
 
+## Week 8: the offer API in Docker
+
+Offers are decided once per cycle by a batch job, then served with low latency. This is the usual design for loyalty offer engines: the member's app asks "what are my offers?" and gets a lookup, not a model run.
+
+```
+weekly batch (python -m nectar.serving.bundle)            API container (FastAPI + uvicorn)
+  features at latest cutoff  ->  champion + cost model      GET  /members/{id}/offers  plan lookup
+  -> ILP allocation ($600 budget, max 3 per member)         POST /score                on-demand scoring
+  -> artifacts/ (models, plan, manifest)  ── mounted ──>    GET  /health /ready /model
+```
+
+- **Versioned bundle** (`serving/bundle.py`): models, the full candidate plan and a manifest (version, git SHA, cutoff, constraints, plan summary and the library versions the models need). It is written atomically, so a running API never reads a half-written bundle. The current plan sends 5,056 offers to 2,003 of 2,421 eligible members.
+- **Request contract:** every field is validated with Pydantic, mirroring the training feature contract. Bad rows, unknown offers, duplicate pairs and batches over 1,000 rows return 422. Unknown members return 404.
+- **Operability:** `/health` for liveness, `/ready` (503 until a bundle loads) for readiness, a Docker `HEALTHCHECK`, an `X-Process-Time-Ms` header and request logs. The container runs as a non-root user, and the bundle is mounted rather than baked in, so a new weekly plan ships without rebuilding the image.
+- **Reproducible serving:** the image pins the exact library versions the models were trained with (`docker/requirements-serve.txt`), because a pickled model is only safe to load with them.
+- **CI** builds the image on every push, starts the container, and calls every endpoint against a synthetic bundle built inside the same image.
+
+**Latency** (2 workers, client-side, 300 requests each, real bundle):
+
+| Request | p50 | p95 | p99 |
+|---|---|---|---|
+| Plan lookup `GET /members/{id}/offers` | 2.9 ms | 4.0 ms | 5.1 ms |
+| Score 1 row `POST /score` | 13.9 ms | 17.8 ms | 20.2 ms |
+| Score 100 rows | 23.5 ms | 25.8 ms | 26.6 ms |
+
+Two fixes found by measuring rather than guessing:
+- Plan lookups first measured **44 ms** even though the server spent 2 ms on them. The cause was a ~40 ms TCP Nagle/delayed-ACK stall in uvicorn's pure-Python HTTP parser on keep-alive connections. Using `httptools` + `uvloop` brought them to **2.9 ms**.
+- Single-row scoring first measured **51 ms**. Profiling showed the model itself took 3 ms. The rest went on building the feature matrix column by column, twice, and re-validating rows Pydantic had already checked. A vectorised matrix (predictions verified identical on all 43,578 rows) and a single validation brought it to **14 ms**.
+
+```bash
+make bundle        # build artifacts/ from the champion and the optimiser
+make serve         # run locally on :8000 (docs at http://localhost:8000/docs)
+make docker-build  # or: docker compose up -d
+make smoke         # call every endpoint
+make benchmark     # latency percentiles
+```
+
 ## Quick start
 
 ```bash
-pip install -e ".[dev,ml]"
+pip install -e ".[dev,ml,serve]"
 # put the 8 Complete Journey CSVs in data/raw/
 make ingest      # CSV -> typed Parquet + DuckDB warehouse (~20s)
 make dbt         # build and test the staging + mart models (~10s)
 make simulate    # generate the randomised offer experiment (~6s)
 make train       # train, compare and select models, log to MLflow (~1 min)
-make optimise    # allocate offers under a $150 budget
+make optimise    # allocate offers under a $150 budget (test members)
+make bundle      # weekly serving bundle for all members ($600, max 3 each)
+make serve       # run the API locally
 make mlflow-ui   # browse experiment runs
 make test        # data-quality contract, mart checks, unit tests
 make eda         # re-run the analysis notebooks
@@ -167,14 +206,16 @@ git clone https://github.com/TilakHeble/nectar-offer-engine.git
 cd nectar-offer-engine
 python -m venv .venv
 .venv\Scripts\activate          # if blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-pip install -e ".[dev,ml]"
+pip install -e ".[dev,ml,serve]"
 # copy the 8 Complete Journey CSVs into data\raw\
 python -m nectar.ingest.load_raw
 cd dbt; dbt build --profiles-dir .; cd ..
 python -m nectar.simulate.simulator
 python -m nectar.models.train
 python -m nectar.optimise.run
+python -m nectar.serving.bundle
 pytest -q
+uvicorn nectar.serving.app:app      # then open http://localhost:8000/docs
 ```
 
 ## Repository layout
@@ -189,14 +230,16 @@ pytest -q
 │   ├── models/learners.py, train.py # uplift learners, training + selection + MLflow
 │   ├── evaluate/metrics.py          # IPW policy value, uplift curves, oracle share
 │   ├── optimise/                    # cost model, ILP + greedy allocation, CLI
-│   ├── serving/ monitoring/         # upcoming weeks
+│   ├── serving/                     # bundle (batch job), FastAPI app, demo bundle, smoke + benchmark
+│   ├── monitoring/                  # upcoming
 ├── dbt/                     # staging, facts, dims, RFM mart + 42 data tests
 ├── notebooks/               # 01 EDA · 02 segments & funnel · 03 experiment · 04 uplift models · 05 allocation
-├── tests/                   # data quality, marts, simulator, schema, metrics, learners, optimiser (63)
+├── tests/                   # data quality, marts, simulator, schema, metrics, learners, optimiser, API (78)
+├── Dockerfile, docker-compose.yml, docker/requirements-serve.txt
 ├── models/                  # champion.json, model_comparison.csv (+ champion.joblib, generated)
 ├── reports/figures/         # charts used in README and write-up
 ├── pipelines/ dashboards/ docs/
-└── .github/workflows/ci.yml # ruff + pytest on every push
+└── .github/workflows/ci.yml # ruff + dbt parse + pytest, then Docker build + container smoke test
 ```
 
 ## Roadmap
@@ -210,7 +253,7 @@ pytest -q
 | 5 ✅ | Response-model baseline + T-learner, MLflow tracking |
 | 6 ✅ | S / X / DR-learner, causal forest, ensemble, uplift and profit curves (**v1**) |
 | 7 ✅ | Budget-constrained offer optimiser |
-| 8 | FastAPI scoring service in Docker |
+| 8 ✅ | FastAPI offer API in Docker, versioned bundle, CI container test |
 | 9 | Prefect pipeline, CI/CD, drift monitoring |
 | 10 | Dashboards, model card, business write-up |
 

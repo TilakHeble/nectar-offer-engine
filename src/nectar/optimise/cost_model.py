@@ -23,5 +23,7 @@ class DiscountCostModel:
         self.model_.fit(model_matrix(offered), offered.discount_cost)
         return self
 
-    def predict(self, df: pd.DataFrame) -> np.ndarray:
-        return np.clip(self.model_.predict(model_matrix(df)), 0, None)
+    def predict(self, df: pd.DataFrame, X: pd.DataFrame | None = None) -> np.ndarray:
+        """Expected cost per row. Pass a precomputed model matrix `X` to skip rebuilding it."""
+        X = model_matrix(df) if X is None else X
+        return np.clip(self.model_.predict(X), 0, None)

@@ -1,0 +1,19 @@
+# Exact versions the champion was trained with. A pickled model must be loaded with the same
+# library versions it was saved with; regenerate this file whenever models are retrained.
+duckdb==1.5.6
+econml==0.17.0
+fastapi==0.156.8
+joblib==1.6.0
+lightgbm==4.7.0
+numpy==2.5.3
+pandas==3.0.5
+pandera==0.34.1
+pyarrow==25.0.1
+pydantic==2.13.5
+scikit-learn==1.9.1
+scipy==1.18.1
+uvicorn==0.54.0
+# Fast HTTP parser + event loop. Without httptools, keep-alive requests hit a ~40 ms TCP
+# Nagle/delayed-ACK stall (plan lookups measured 44 ms vs 1.9 ms with it).
+httptools==0.9.0
+uvloop==0.23.0

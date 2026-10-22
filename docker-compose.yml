@@ -1,0 +1,9 @@
+services:
+  api:
+    build: .
+    image: nectar-offer-api:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./artifacts:/app/artifacts:ro
+    restart: unless-stopped
