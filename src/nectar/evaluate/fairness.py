@@ -27,8 +27,10 @@ FOUR_FIFTHS = 0.8
 def member_plan(candidates: pd.DataFrame) -> pd.DataFrame:
     """One row per eligible member: offers received, expected discount cost, predicted value."""
     sel = candidates[candidates.selected]
+    # Prefer the plan's profit forecast when present (the optimiser's `value` may be risk-adjusted).
+    vcol = "forecast" if "forecast" in candidates else "value"
     per = sel.groupby("member_id").agg(
-        offers=("offer_id", "size"), discount=("cost", "sum"), value=("value", "sum")
+        offers=("offer_id", "size"), discount=("cost", "sum"), value=(vcol, "sum")
     )
     members = pd.DataFrame({"member_id": candidates.member_id.unique()})
     out = members.merge(per, on="member_id", how="left").fillna(

@@ -1,2 +1,4 @@
 run_id,status,drift_status,max_feature_psi,offers_sent,members_reached,published_version,message
 20261022-092711,published,ok,0.0121,5056,2003,20261022-092718-66eb1af,published
+20261022-103902,failed,ok,0.0121,,,,AttributeError: Can't get attribute 'BaggedUplift' on <module 'nectar.pipeline.weekly' from '/home/claude/nectar-offer-engine/src/nectar/pipeline/weekly.py'>
+20261022-104109,published,ok,0.0121,4158,1748,20261022-104123-95e69d6,published

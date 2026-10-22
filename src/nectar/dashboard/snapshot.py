@@ -38,7 +38,9 @@ def _write(df: pd.DataFrame, name: str, out: Path) -> None:
 
 
 def plan_tables(bundle: Bundle, con) -> dict[str, pd.DataFrame]:
-    cand = bundle.candidates
+    cand = bundle.candidates.copy()
+    if "forecast" not in cand:
+        cand["forecast"] = cand["value"]
     sel = cand[cand.selected]
     by_cat = (
         cand.groupby(["offer_id", "commodity", "discount_pct"])
@@ -48,7 +50,7 @@ def plan_tables(bundle: Bundle, con) -> dict[str, pd.DataFrame]:
                     "eligible_members": g.member_id.nunique(),
                     "offers_sent": int(g.selected.sum()),
                     "expected_discount_cost": g.cost[g.selected].sum(),
-                    "predicted_incremental_profit": g.value[g.selected].sum(),
+                    "predicted_incremental_profit": g.forecast[g.selected].sum(),
                     "share_positive_value": (g.value > 0).mean(),
                 }
             ),
@@ -99,7 +101,9 @@ def budget_curve(
 ) -> pd.DataFrame:
     from nectar.optimise.allocate import Constraints, solve_ilp
 
-    cand = bundle.candidates[["member_id", "offer_id", "value", "cost"]]
+    cand = bundle.candidates.copy()
+    forecast = (cand.forecast if "forecast" in cand else cand.value).to_numpy()
+    cand = cand[["member_id", "offer_id", "value", "cost"]]
     cap = bundle.manifest["constraints"]["max_per_member"]
     rows = []
     for b in budgets:
@@ -107,7 +111,7 @@ def budget_curve(
         rows.append(
             {
                 "budget": b,
-                "predicted_profit": a.objective,
+                "predicted_profit": float(forecast[a.selected].sum()),
                 "expected_cost": a.spend,
                 "offers_sent": int(a.selected.sum()),
                 "members_reached": int(cand.member_id[a.selected].nunique()),
@@ -115,6 +119,42 @@ def budget_curve(
             }
         )
     return pd.DataFrame(rows)
+
+
+def robust_tables() -> dict[str, pd.DataFrame]:
+    """Point vs risk-aware allocation on test (ground truth) and the live-test power table."""
+    from nectar.evaluate.power import cuped, member_outcomes, sample_size_per_arm
+
+    out = {}
+    path = ROOT / "models" / "robust_eval.csv"
+    if path.exists():
+        z = json.loads((ROOT / "models" / "robust.json").read_text())["z"]
+        r = pd.read_csv(path)
+        r = r[(r.split == "test") & r.method.isin(["point", f"lcb z={z}"])].copy()
+        r["method"] = r.method.map({"point": "Point prediction", f"lcb z={z}": "Risk-aware"})
+        r["overstatement"] = r.forecast / r.true_profit - 1
+        out["robust_comparison"] = r[
+            ["cap", "budget", "method", "offers", "forecast", "true_profit", "overstatement"]
+        ]
+    con = duckdb.connect(str(WAREHOUSE_PATH), read_only=True)
+    y, x = member_outcomes(con)
+    con.close()
+    rho = float(np.corrcoef(x, y)[0, 1])
+    sd = float(y.std(ddof=1))
+    out["power"] = pd.DataFrame(
+        [
+            {
+                "effect_per_member": d,
+                "n_per_arm": sample_size_per_arm(sd, d),
+                "n_per_arm_cuped": sample_size_per_arm(sd, d, rho=rho),
+                "outcome_sd": sd,
+                "rho": rho,
+                "variance_reduction": 1 - float(cuped(y, x)[0].var(ddof=1) / y.var(ddof=1)),
+            }
+            for d in (0.25, 0.5, 1.0, 2.0)
+        ]
+    )
+    return out
 
 
 def model_tables() -> dict[str, pd.DataFrame]:
@@ -182,6 +222,7 @@ def build(out: Path = OUT, artifacts: Path = DEFAULT_DIR) -> Path:
     tables.update(fairness_tables(bundle, con))
     tables["budget_curve"] = budget_curve(bundle)
     tables.update(model_tables())
+    tables.update(robust_tables())
     tables.update(drift_tables(bundle))
     runs = ROOT / "runs" / "history.csv"
     if runs.exists():
@@ -193,6 +234,7 @@ def build(out: Path = OUT, artifacts: Path = DEFAULT_DIR) -> Path:
         "champion": bundle.manifest["champion"],
         "features_cutoff_week": bundle.manifest["features_cutoff_week"],
         "constraints": bundle.manifest["constraints"],
+        "risk": bundle.manifest.get("risk", {"method": "point"}),
         "plan": bundle.manifest["plan"],
         "model_test_metrics": bundle.manifest.get("model_test_metrics", {}),
         "currency": "USD (Dunnhumby data is US grocery spend)",

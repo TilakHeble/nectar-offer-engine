@@ -218,7 +218,7 @@ def member_offers(member_id: int, request: Request) -> MemberOffers:
                 offer_id=r.offer_id,
                 commodity=r.commodity,
                 discount_pct=r.discount_pct,
-                predicted_incremental_profit=r.value,
+                predicted_incremental_profit=getattr(r, "forecast", r.value),
                 predicted_discount_cost=r.cost,
             )
             for r in rows.itertuples()

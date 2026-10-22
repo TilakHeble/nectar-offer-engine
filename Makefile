@@ -1,4 +1,4 @@
-.PHONY: install ingest dbt dbt-docs simulate train optimise mlflow-ui bundle serve docker-build docker-run smoke benchmark pipeline pipeline-serve prefect-ui snapshot dashboard eda test lint all clean
+.PHONY: install ingest dbt dbt-docs simulate train optimise robust mlflow-ui bundle serve docker-build docker-run smoke benchmark pipeline pipeline-serve prefect-ui snapshot dashboard eda test lint all clean
 
 RAW_DIR ?= data/raw
 
@@ -22,6 +22,9 @@ train:
 
 optimise:
 	python -m nectar.optimise.run --budget 150 --max-per-member 99
+
+robust:
+	python -m nectar.optimise.robust
 
 mlflow-ui:
 	mlflow ui --backend-store-uri sqlite:///mlflow.db
@@ -66,6 +69,7 @@ eda:
 	jupyter nbconvert --to notebook --execute --inplace notebooks/04_uplift_models.ipynb
 	jupyter nbconvert --to notebook --execute --inplace notebooks/05_offer_allocation.ipynb
 	jupyter nbconvert --to notebook --execute --inplace notebooks/06_monitoring.ipynb
+	jupyter nbconvert --to notebook --execute --inplace notebooks/07_robust_allocation.ipynb
 
 test:
 	pytest -q

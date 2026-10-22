@@ -55,6 +55,7 @@ class CycleConfig:
     budget: float = 600.0
     max_per_member: int = 3
     refresh: bool = False  # rebuild warehouse from raw CSVs first
+    risk_aware: bool = True  # rank offers by a lower confidence bound (see optimise/robust.py)
     force: bool = False  # publish even if a gate fails (logged)
     max_plan_change: float = 0.5  # block if offers sent moves more than +/-50% vs live plan
     artifacts_dir: Path = DEFAULT_DIR
@@ -139,7 +140,13 @@ def check_drift(
 def build_plan(cfg: CycleConfig, features: pd.DataFrame) -> Bundle:
     from nectar.serving.bundle import build_bundle
 
-    return build_bundle(cfg.budget, cfg.max_per_member, cfg.cutoff_week, features=features)
+    return build_bundle(
+        cfg.budget,
+        cfg.max_per_member,
+        cfg.cutoff_week,
+        features=features,
+        risk_aware=cfg.risk_aware,
+    )
 
 
 def check_plan(bundle: Bundle, cfg: CycleConfig) -> list[str]:
@@ -292,6 +299,7 @@ def _prefect_flow():
         max_per_member: int = 3,
         refresh: bool = False,
         force: bool = False,
+        risk_aware: bool = True,
     ) -> dict:
         cfg = CycleConfig(
             cutoff_week=cutoff_week,
@@ -299,6 +307,7 @@ def _prefect_flow():
             max_per_member=max_per_member,
             refresh=refresh,
             force=force,
+            risk_aware=risk_aware,
         )
         rec = run_cycle(cfg, task=lambda fn, name: task(fn, name=name))
         print(f"run {rec.run_id}: {rec.status} - {rec.message}")
@@ -314,6 +323,7 @@ def main() -> None:
     p.add_argument("--max-per-member", type=int, default=3)
     p.add_argument("--refresh", action="store_true", help="rebuild the warehouse first")
     p.add_argument("--force", action="store_true", help="publish even if a gate fails")
+    p.add_argument("--no-risk", action="store_true", help="rank by point predictions instead")
     p.add_argument("--no-prefect", action="store_true", help="run without Prefect")
     p.add_argument("--serve", action="store_true", help="schedule weekly (Mondays 06:00)")
     a = p.parse_args()
@@ -327,6 +337,7 @@ def main() -> None:
             max_per_member=a.max_per_member,
             refresh=a.refresh,
             force=a.force,
+            risk_aware=not a.no_risk,
         )
         rec = run_cycle(cfg)
         print(f"run {rec.run_id}: {rec.status} - {rec.message}")
@@ -337,7 +348,12 @@ def main() -> None:
         flow.serve(
             name="weekly",
             cron="0 6 * * 1",
-            parameters={"budget": a.budget, "max_per_member": a.max_per_member, "refresh": True},
+            parameters={
+                "budget": a.budget,
+                "max_per_member": a.max_per_member,
+                "refresh": True,
+                "risk_aware": not a.no_risk,
+            },
         )
         return
     result = flow(
@@ -346,6 +362,7 @@ def main() -> None:
         max_per_member=a.max_per_member,
         refresh=a.refresh,
         force=a.force,
+        risk_aware=not a.no_risk,
     )
     raise SystemExit(0 if result["status"].startswith("published") else 2)
 

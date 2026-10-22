@@ -1,20 +1,26 @@
 {
-  "bundle_version": "20261022-092718-66eb1af",
+  "bundle_version": "20261022-104123-95e69d6",
   "champion": "X-learner",
   "features_cutoff_week": 102,
   "constraints": {
     "budget": 600.0,
     "max_per_member": 3
   },
+  "risk": {
+    "method": "lcb",
+    "z": 0.5,
+    "n_models": 30
+  },
   "plan": {
     "method": "ilp",
-    "offers_sent": 5056,
-    "predicted_profit": 365.18257213461027,
-    "expected_cost": 595.5363507591524,
+    "offers_sent": 4158,
+    "predicted_profit": 238.87318133037368,
+    "expected_cost": 443.47516997554146,
     "shadow_price": -0.0,
+    "forecast_profit": 298.83483954731093,
     "eligible_members": 2421,
     "candidate_pairs": 43578,
-    "members_reached": 2003
+    "members_reached": 1748
   },
   "model_test_metrics": {
     "share_offered": 0.2754706533776301,

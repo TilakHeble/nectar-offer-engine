@@ -11,7 +11,7 @@ An end-to-end, production-style project modelled on Sainsbury's **Nectar Prices*
 - 📄 [Business case (2 pages)](docs/business_case.md): the problem, results and rollout plan, written for a commercial audience
 - 🧾 [Model card](docs/model_card.md): intended use, performance, fairness check, limitations, monitoring
 - 📊 **[Live dashboard](https://nectar-offer.streamlit.app/)**: offer plan, model comparison, fairness and monitoring (first visit may take ~30 s to wake up)
-- 📓 Notebooks [01](notebooks/01_eda.ipynb) · [02](notebooks/02_segments_and_funnel.ipynb) · [03](notebooks/03_offer_experiment.ipynb) · [04](notebooks/04_uplift_models.ipynb) · [05](notebooks/05_offer_allocation.ipynb) · [06](notebooks/06_monitoring.ipynb)
+- 📓 Notebooks [01](notebooks/01_eda.ipynb) · [02](notebooks/02_segments_and_funnel.ipynb) · [03](notebooks/03_offer_experiment.ipynb) · [04](notebooks/04_uplift_models.ipynb) · [05](notebooks/05_offer_allocation.ipynb) · [06](notebooks/06_monitoring.ipynb) · [07](notebooks/07_robust_allocation.ipynb)
 
 ```mermaid
 flowchart LR
@@ -19,19 +19,23 @@ flowchart LR
     B --> C[Point-in-time features<br/>Pandera contract]
     C --> D[Randomised offer<br/>experiment]
     D --> E[Uplift models<br/>MLflow, honest selection]
+    E --> R[Bootstrap ensemble<br/>uncertainty per offer]
+    R --> F
     E --> F[Weekly pipeline · Prefect]
     C --> F
-    F -->|drift gate · PSI| G[Budget optimiser<br/>ILP, caps]
+    F -->|drift gate · PSI| G[Risk-aware optimiser<br/>ILP on lower bounds]
     G -->|plan gate| H[Versioned bundle]
     H --> I[FastAPI in Docker<br/>offers in ~3 ms]
     H --> J[Dashboard<br/>Streamlit]
 ```
 
-> Status: **all 10 weeks complete.** 106 tests and CI on every push (lint, dbt compile, tests, Docker build + container smoke test).
+> Status: **all 10 weeks complete, plus risk-aware allocation and test design.** 116 tests and CI on every push (lint, dbt compile, tests, Docker build + container smoke test).
 
 ## Headline result
 
 On a held-out test set, **uplift targeting turns a loss-making offer programme profitable**. The selected model (X-learner) earns +$107 of incremental profit where blanket offers lose $209 and a "likely buyer" model loses $777. The best model captures 77% of the best possible profit. The champion was chosen on validation data without access to the ground truth.
+
+**Beyond the standard approach:** standard uplift pipelines rank offers by a point prediction, and the plan then *overstates its own profit* (the optimiser's curse). This engine measures each prediction's uncertainty with a 30-model bootstrap ensemble and allocates on a **lower confidence bound**, a technique borrowed from robust portfolio optimisation. With the production 3-offer cap at a $100 budget, true profit rises **+37%** and the forecast's overstatement falls from **133% to 45%** ([details](#beyond-v1-risk-aware-allocation-and-test-design)).
 
 ![Model comparison](reports/figures/14_model_comparison.png)
 
@@ -160,7 +164,7 @@ Model scores say which offers pay; the optimiser (`optimise/`) decides which to 
 | True profit peaks at a $200 budget (+$120) and then falls | A budget limits the damage from model error; more budget is not always better |
 | Capping offers at 3 per member keeps only 42% of uncapped profit at $100 | Persuadable members respond in many categories; the cap is a business cost to quantify |
 | With caps, the ILP earns +$37 where the greedy rule loses $6 (at $100) | Exact optimisation is worth it and solves in under a second |
-| The plan predicts 34% more profit than it really delivers (at $100) | Optimiser's curse: measure plan impact on a randomised holdout |
+| The plan predicts 34% more profit than it really delivers (at $100) | Optimiser's curse: fixed by risk-aware allocation (below), and plan impact is measured on a randomised holdout |
 | Recommended $150 plan: 2,066 offers to 420 members, +$113 true profit | Offers go mostly to lapsed and occasional buyers; Champions (26% of members) get 8% of offers |
 
 Full analysis: [`notebooks/05_offer_allocation.ipynb`](notebooks/05_offer_allocation.ipynb).
@@ -176,7 +180,7 @@ weekly batch (python -m nectar.serving.bundle)            API container (FastAPI
   -> artifacts/ (models, plan, manifest)  ── mounted ──>    GET  /health /ready /model
 ```
 
-- **Versioned bundle** (`serving/bundle.py`): models, the full candidate plan and a manifest (version, git SHA, cutoff, constraints, plan summary and the library versions the models need). It is written atomically, so a running API never reads a half-written bundle. The current plan sends 5,056 offers to 2,003 of 2,421 eligible members.
+- **Versioned bundle** (`serving/bundle.py`): models, the full candidate plan and a manifest (version, git SHA, cutoff, constraints, plan summary and the library versions the models need). It is written atomically, so a running API never reads a half-written bundle. The current (risk-aware) plan sends 4,158 offers to 1,748 of 2,421 eligible members.
 - **Request contract:** every field is validated with Pydantic, mirroring the training feature contract. Bad rows, unknown offers, duplicate pairs and batches over 1,000 rows return 422. Unknown members return 404.
 - **Operability:** `/health` for liveness, `/ready` (503 until a bundle loads) for readiness, a Docker `HEALTHCHECK`, an `X-Process-Time-Ms` header and request logs. The container runs as a non-root user, and the bundle is mounted rather than baked in, so a new weekly plan ships without rebuilding the image.
 - **Reproducible serving:** the image pins the exact library versions the models were trained with (`docker/requirements-serve.txt`), because a pickled model is only safe to load with them.
@@ -238,11 +242,63 @@ make pipeline-serve  # run on a schedule: Mondays 06:00
 make prefect-ui      # optional: Prefect dashboard of runs
 ```
 
+## Beyond v1: risk-aware allocation and test design
+
+Weeks 1–10 build what a strong uplift team ships. Two further steps go past it: one fixes a problem the standard pipeline has, and one says how to prove the result live.
+
+### 1. Correcting the optimiser's curse
+
+**Problem.** The optimiser picks the offers with the highest *predicted* profit. Predictions are noisy, so the top of the list is full of pairs whose error happens to be positive. The week 7 plan overstated its own profit by 34% (no cap) to 133% (3-offer cap) at a $100 budget. In finance this is why mean-variance portfolios built on sample means "maximise estimation error".
+
+**Method** (`optimise/robust.py`):
+1. **Uncertainty per offer.** Refit the champion on 30 member-level bootstrap resamples of the training data, giving each member-offer pair a mean μ and spread σ.
+2. **Risk-averse value.** The optimiser maximises the lower bound **μ − zσ**, so an offer must be good *and* reliably good. Empirical-Bayes shrinkage, μ pulled towards the average by σ²/(σ²+τ²), was also tested.
+3. **Honest selection.** z is chosen on the validation split from observed (IPW) outcomes only (z = 0.5). The plan's forecast is the shrunk posterior mean, not the penalised score.
+
+![Risk-aware allocation](reports/figures/26_robust_profit.png)
+
+| Test members, true profit | Current plan | Risk-aware | Change |
+|---|---|---|---|
+| $100 budget, max 3 offers each (production) | $37 | **$51** | **+37%** |
+| $150 budget, max 3 offers each | $29 | **$50** | +70% |
+| $100 budget, no cap | $87 | **$98** | +12% |
+| $300 budget, no cap | $107 | **$128** | +20% |
+| Forecast overstatement, $100 with cap | 133% | **45%** | |
+| Forecast overstatement, $100 no cap | 34% | **6%** | |
+
+- **Wins at every budget and cap** on test, and in **24 of 24** checks with three more random seeds (+23% to +28% at $100 with the cap).
+- With the cap, the current plan gets *worse* as the budget grows, because extra budget is spent on offers that only look good by chance. The risk-aware plan doesn't.
+- Shrinkage helps too ($37 → $44 at $100 with the cap), but less: one global prior pulls every estimate by a similar amount, while the lower bound penalises exactly the uncertain offers.
+- **Honest about the selection:** on test, z = 1.0 would have done better still, but z = 0.5 is kept because it was chosen on validation.
+- **Trade-off, reported not hidden.** The model is least certain about the **most frequent shoppers** (bigger, more variable baskets; correlation of uncertainty with log trips 0.56). The risk-aware plan therefore reaches fewer of them: reach falls from 97% in the least-frequent quartile to 38% in the most-frequent. Group reach gaps widen (see the fairness table below). The fixes are a per-group minimum-reach constraint in the ILP or a smaller z, and the pipeline can fall back with `--no-risk`.
+
+### 2. How big must a live test be? Power analysis with CUPED
+
+`evaluate/power.py` sizes a member-level A/B test from real spending variance. The outcome is gross margin per member over one 4-week cycle: mean $43.50, sd $52.85, over 2,407 active members. **CUPED** (Deng et al., 2013, used at Microsoft, Netflix and Booking) subtracts the part of the outcome predicted by each member's own spending in the 12 weeks before the test. Randomisation keeps the effect unbiased, and the variance falls by 1 − ρ².
+
+| Effect to detect (per member per cycle) | Members per arm | With CUPED (ρ = 0.80) |
+|---|---|---|
+| $0.25 | 701,576 | 257,135 |
+| **$0.50** | **175,394** | **64,284** |
+| $1.00 | 43,849 | 16,071 |
+| $2.00 | 10,963 | 4,018 |
+
+CUPED removes **63%** of the variance, so the test needs about a third of the members, or ends in a third of the time. At Nectar's scale, a 50p effect is measurable in a single cycle.
+
+![Test power](reports/figures/29_test_power.png)
+
+Full analysis: [`notebooks/07_robust_allocation.ipynb`](notebooks/07_robust_allocation.ipynb).
+
+```bash
+make robust      # fit the 30-model ensemble, compare methods, choose z (~2 min)
+make pipeline    # weekly plan now uses the lower bound (add --no-risk for point predictions)
+```
+
 ## Week 10: dashboard, model card and business case
 
 ### Dashboard
 
-`dashboards/app.py` (Streamlit) has five tabs: **Overview** (the headline result and this cycle's plan), **Offer plan** (reach by segment, offers per member, by-offer table, budget curve), **Models** (comparison and uplift curves), **Fairness** (reach by customer group against the four-fifths rule) and **Monitoring** (drift history, latest check, pipeline runs).
+`dashboards/app.py` (Streamlit) has six tabs: **Overview** (the headline result and this cycle's plan), **Offer plan** (reach by segment, offers per member, by-offer table, budget curve), **Models** (comparison and uplift curves), **Risk & test design** (point vs risk-aware allocation, test sizing with CUPED), **Fairness** (reach by customer group against the four-fifths rule) and **Monitoring** (drift history, latest check, pipeline runs).
 
 It reads only `dashboards/snapshot/`, about 76 KB of **aggregates** written by `python -m nectar.dashboard.snapshot`. No member-level rows, no raw data and no ML libraries are needed, so it is safe to host publicly.
 
@@ -252,12 +308,14 @@ It reads only `dashboards/snapshot/`, about 76 KB of **aggregates** written by `
 
 `evaluate/fairness.py` compares how often each customer group receives at least one offer (reach), and flags any group below 80% of the best-reached group. The model uses no demographics, and they exist for 32% of households.
 
-| Attribute | Lowest reach vs best | Flagged |
-|---|---|---|
-| Age group | 0.85 | none |
-| Household size | 0.88 | none |
-| Children | 0.90 | none |
-| Income level | 0.71 | Levels 8 and 9 (30–38 members each: a review item, not proof; see the [model card](docs/model_card.md#fairness)) |
+| Attribute | Lowest reach vs best: point plan | Risk-aware plan (live) | Flagged on the live plan |
+|---|---|---|---|
+| Age group | 0.85 | 0.80 | none |
+| Household size | 0.88 | 0.75 | size 3 (109 members) |
+| Children | 0.90 | 0.85 | none |
+| Income level | 0.71 | 0.62 | Levels 8 and 9 (30–38 members each: a review item, not proof; see the [model card](docs/model_card.md#fairness)) |
+
+Risk-aware allocation trades reach for profit, and the gaps widen. This is the business decision the check exists to surface.
 
 ### Write-ups
 - [Business case](docs/business_case.md): problem, results in money terms, a live A/B rollout design, risks and controls
@@ -273,6 +331,7 @@ make dbt         # build and test the staging + mart models (~10s)
 make simulate    # generate the randomised offer experiment (~6s)
 make train       # train, compare and select models, log to MLflow (~1 min)
 make optimise    # allocate offers under a $150 budget (test members)
+make robust      # bootstrap ensemble + risk level for risk-aware allocation
 make bundle      # weekly serving bundle for all members ($600, max 3 each)
 make pipeline    # the gated weekly cycle: features -> drift check -> plan -> publish
 make snapshot    # refresh the dashboard's aggregated data
@@ -300,6 +359,7 @@ python -m nectar.ingest.load_raw
 cd dbt; dbt build --profiles-dir .; cd ..
 python -m nectar.simulate.simulator
 python -m nectar.models.train
+python -m nectar.optimise.robust   # uncertainty ensemble for risk-aware plans (~2 min)
 python -m nectar.pipeline.weekly    # drift check + plan + publish (or --no-prefect)
 pytest -q
 uvicorn nectar.serving.app:app      # then open http://127.0.0.1:8000/docs
@@ -323,15 +383,15 @@ Troubleshooting:
 │   ├── simulate/simulator.py        # randomised experiment with known ground truth
 │   ├── features/schema.py           # Pandera feature contract + model matrix
 │   ├── models/learners.py, train.py # uplift learners, training + selection + MLflow
-│   ├── evaluate/metrics.py, fairness.py # IPW policy value, uplift curves, oracle share; group reach
-│   ├── optimise/                    # cost model, ILP + greedy allocation, CLI
+│   ├── evaluate/metrics.py, fairness.py, power.py # IPW policy value, uplift curves; group reach; test sizing + CUPED
+│   ├── optimise/                    # cost model, ILP + greedy allocation, risk-aware (bootstrap + lower bound)
 │   ├── serving/                     # bundle (batch job), FastAPI app, demo bundle, smoke + benchmark
 │   ├── monitoring/drift.py          # PSI drift profile, comparison, HTML report
 │   ├── pipeline/weekly.py           # Prefect flow: gates, publish, run records
 │   ├── dashboard/snapshot.py        # aggregated export for the dashboard
 ├── dbt/                     # staging, facts, dims, RFM mart + 42 data tests
-├── notebooks/               # 01 EDA · 02 segments & funnel · 03 experiment · 04 uplift models · 05 allocation · 06 monitoring
-├── tests/                   # data, marts, simulator, schema, metrics, learners, optimiser, API, drift, pipeline, fairness, dashboard (106)
+├── notebooks/               # 01 EDA · 02 segments & funnel · 03 experiment · 04 uplift models · 05 allocation · 06 monitoring · 07 risk-aware allocation + test power
+├── tests/                   # data, marts, simulator, schema, metrics, learners, optimiser, API, drift, pipeline, fairness, robust, power, dashboard (116)
 ├── Dockerfile, docker-compose.yml, docker/requirements-serve.txt
 ├── models/                  # champion.json, model_comparison.csv, reference_profile.json (+ champion.joblib, generated)
 ├── reports/figures/         # charts used in README and write-up
@@ -355,6 +415,7 @@ Troubleshooting:
 | 8 ✅ | FastAPI offer API in Docker, versioned bundle, CI container test |
 | 9 ✅ | Gated weekly Prefect pipeline, PSI drift monitoring, auto-reloading API |
 | 10 ✅ | Streamlit dashboard, fairness check, model card, business case |
+| + ✅ | Risk-aware allocation (bootstrap uncertainty, lower-bound ILP), power analysis with CUPED (**v2**) |
 
 ## Tech stack
 

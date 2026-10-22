@@ -58,9 +58,10 @@ st.caption(
     f"bundle {meta['bundle_version']} · amounts in {meta['currency']}"
 )
 
-tab_overview, tab_plan, tab_models, tab_fair, tab_monitor = st.tabs(
-    ["Overview", "Offer plan", "Models", "Fairness", "Monitoring"]
+tab_overview, tab_plan, tab_models, tab_risk, tab_fair, tab_monitor = st.tabs(
+    ["Overview", "Offer plan", "Models", "Risk & test design", "Fairness", "Monitoring"]
 )
+risk = meta.get("risk", {"method": "point"})
 
 # ---------------- Overview ----------------
 with tab_overview:
@@ -92,12 +93,22 @@ with tab_overview:
     )
     k3.metric("Expected discount cost", money(plan["expected_cost"]))
     k3.caption(f"budget {money(meta['constraints']['budget'])}")
-    k4.metric("Predicted incremental profit", money(plan["predicted_profit"]))
-    k4.caption("model estimate; validate with a holdout")
+    k4.metric(
+        "Forecast incremental profit", money(plan.get("forecast_profit", plan["predicted_profit"]))
+    )
+    k4.caption(
+        f"risk-aware plan (lower bound, z={risk['z']}); validate with a holdout"
+        if risk.get("method") == "lcb"
+        else "model estimate; validate with a holdout"
+    )
     st.caption(
         f"Max {meta['constraints']['max_per_member']} offers per member · features to week "
-        f"{meta['features_cutoff_week'] - 1} · decision rule: offer only when predicted "
-        "incremental profit is positive."
+        f"{meta['features_cutoff_week'] - 1} · decision rule: offer only when "
+        + (
+            "the lower bound on incremental profit is positive."
+            if risk.get("method") == "lcb"
+            else "predicted incremental profit is positive."
+        )
     )
 
 # ---------------- Offer plan ----------------
@@ -248,6 +259,97 @@ with tab_models:
         )
     )
     st.altair_chart(chart, use_container_width=True)
+
+# ---------------- Risk & test design ----------------
+with tab_risk:
+    st.subheader("Correcting the optimiser's curse")
+    st.write(
+        "Picking the offers with the highest *predicted* profit also picks the ones whose "
+        "profit is most over-predicted, so a plan overstates what it will earn. The engine "
+        "refits the champion on 30 bootstrap resamples to measure each prediction's "
+        "uncertainty and ranks offers by a lower bound (prediction minus "
+        f"{risk.get('z', 0.5)} standard deviations). The risk level was chosen on validation "
+        "using observed outcomes only. Below: test members, true profit from the experiment."
+    )
+    rc = d["robust_comparison"]
+    cap_label = {3: "Max 3 offers per member (production)", 99: "No per-member cap"}
+    cap = st.radio(
+        "Per-member cap", [3, 99], format_func=cap_label.get, horizontal=True, key="risk_cap"
+    )
+    sub = rc[rc.cap == cap]
+    colours = alt.Scale(domain=["Point prediction", "Risk-aware"], range=[GREY, BLUE])
+    left, right = st.columns(2)
+    with left:
+        st.markdown("**True incremental profit**: risk-aware wins at every budget")
+        chart = (
+            alt.Chart(sub)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("budget:Q", title="Discount budget ($)"),
+                y=alt.Y("true_profit:Q", title="True incremental profit ($)"),
+                color=alt.Color(
+                    "method:N", scale=colours, legend=alt.Legend(orient="bottom", title=None)
+                ),
+                tooltip=[
+                    "method",
+                    "budget",
+                    "offers",
+                    alt.Tooltip("true_profit:Q", format="$.1f"),
+                    alt.Tooltip("forecast:Q", format="$.1f", title="plan forecast"),
+                ],
+            )
+        )
+        st.altair_chart(chart, use_container_width=True)
+    with right:
+        st.markdown("**Forecast overstatement**: how far the plan over-promises (0% = honest)")
+        chart = (
+            alt.Chart(sub)
+            .mark_bar()
+            .encode(
+                x=alt.X("budget:O", title="Discount budget ($)", axis=alt.Axis(labelAngle=0)),
+                xOffset="method:N",
+                y=alt.Y("overstatement:Q", axis=alt.Axis(format="%"), title="Overstatement"),
+                color=alt.Color(
+                    "method:N", scale=colours, legend=alt.Legend(orient="bottom", title=None)
+                ),
+                tooltip=["method", "budget", alt.Tooltip("overstatement:Q", format=".0%")],
+            )
+        )
+        st.altair_chart(chart, use_container_width=True)
+    at100 = sub[sub.budget == 100].set_index("method")
+    if {"Point prediction", "Risk-aware"} <= set(at100.index):
+        pt, ra = at100.loc["Point prediction"], at100.loc["Risk-aware"]
+        msg = (
+            f"At a $100 budget: true profit {money(pt.true_profit)} → {money(ra.true_profit)} "
+            f"({ra.true_profit / pt.true_profit - 1:+.0%}); overstatement "
+            f"{pt.overstatement:.0%} → {ra.overstatement:.0%}. Trade-off: the risk-aware plan "
+            "reaches fewer frequent shoppers, whose profit is hardest to predict (see Fairness)."
+        )
+        st.info(msg.replace("$", r"\$"))  # stop Markdown reading $...$ as maths
+
+    st.divider()
+    st.subheader("How big must a live test be?")
+    pw = d["power"]
+    first = pw.iloc[0]
+    st.write(
+        f"Members' 4-week gross margin varies a lot (sd {money(first.outcome_sd, 2)}), so small "
+        "effects need very large tests. **CUPED** adjusts each member's outcome by their own "
+        f"pre-test spending (correlation {first.rho:.2f}), removing "
+        f"{first.variance_reduction:.0%} of the variance without biasing the effect. "
+        "Members per arm for 80% power at 5% significance:"
+    )
+    st.dataframe(
+        pd.DataFrame(
+            {
+                "Effect per member per cycle": pw.effect_per_member.map(lambda v: money(v, 2)),
+                "Standard test": pw.n_per_arm.map("{:,}".format),
+                "With CUPED": pw.n_per_arm_cuped.map("{:,}".format),
+                "Saving": (1 - pw.n_per_arm_cuped / pw.n_per_arm).map("{:.0%}".format),
+            }
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
 
 # ---------------- Fairness ----------------
 with tab_fair:

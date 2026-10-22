@@ -1,0 +1,8 @@
+{
+  "method": "lcb",
+  "z": 0.5,
+  "n_models": 30,
+  "prior_mean": -0.10800336718967105,
+  "prior_var": 0.07036435972209977,
+  "selected_on": "validation observed incremental profit, budgets [50, 100, 150], caps [3, 99]"
+}

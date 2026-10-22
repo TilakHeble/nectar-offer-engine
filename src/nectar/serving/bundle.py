@@ -37,7 +37,19 @@ log = logging.getLogger(__name__)
 
 DEFAULT_DIR = ROOT / "artifacts"
 LATEST_CUTOFF_WEEK = 102  # features from weeks 17-101 (the last full week); offers for week 102+
-PLAN_COLUMNS = ["member_id", "offer_id", "commodity", "discount_pct", "value", "cost", "selected"]
+# value    = what the optimiser maximised (risk-adjusted when the risk-aware plan is on)
+# forecast = the plan's best estimate of each offer's incremental profit (shrunk posterior mean)
+PLAN_COLUMNS = [
+    "member_id",
+    "offer_id",
+    "commodity",
+    "discount_pct",
+    "value",
+    "forecast",
+    "value_sd",
+    "cost",
+    "selected",
+]
 
 
 @dataclass
@@ -94,7 +106,8 @@ class Bundle:
         tmp.mkdir(parents=True)
         joblib.dump(self.model, tmp / "champion.joblib")
         joblib.dump(self.cost_model, tmp / "cost_model.joblib")
-        self.candidates[PLAN_COLUMNS].to_parquet(tmp / "candidates.parquet", index=False)
+        cols = [c for c in PLAN_COLUMNS if c in self.candidates]
+        self.candidates[cols].to_parquet(tmp / "candidates.parquet", index=False)
         (tmp / "manifest.json").write_text(json.dumps(self.manifest, indent=2))
         # Swap in atomically so a running API never sees a half-written bundle.
         if out_dir.exists():
@@ -129,11 +142,18 @@ def build_bundle(
     cutoff_week: int = LATEST_CUTOFF_WEEK,
     seed: int = 0,
     features: pd.DataFrame | None = None,
+    risk_aware: bool = True,
 ) -> Bundle:
     """Score every eligible member at `cutoff_week` and allocate offers under the constraints.
 
     Pass `features` (already built and validated, e.g. by the weekly pipeline) to skip
     rebuilding them.
+
+    With `risk_aware` (default) and the bootstrap ensemble available (`python -m
+    nectar.optimise.robust`), the optimiser ranks offers by a lower confidence bound
+    mu - z * sigma, with z chosen on validation data, which corrects the optimiser's curse. The
+    plan's profit forecast uses the shrunk (posterior-mean) estimate. Without it, the
+    champion's point prediction is used for both.
     """
     from nectar.models.train import load_experiment, split_by_member
     from nectar.optimise.allocate import Constraints, solve_ilp
@@ -149,9 +169,22 @@ def build_bundle(
 
     if features is None:
         features = validate_features(build_offer_features(cutoff_week))
+    X = model_matrix(features)
     candidates = features[["member_id", "offer_id", "commodity", "discount_pct"]].copy()
-    candidates["value"] = model.score(model_matrix(features))
-    candidates["cost"] = cost_model.predict(features)
+    candidates["cost"] = cost_model.predict(features, X=X)
+    risk = _load_risk() if risk_aware else None
+    if risk:
+        from nectar.optimise.robust import lower_bound, shrink
+
+        mu, sd = risk["bag"].predict(X)
+        candidates["value"] = lower_bound(mu, sd, risk["z"])
+        candidates["forecast"] = shrink(mu, sd, risk["prior_mean"], risk["prior_var"])
+        candidates["value_sd"] = sd
+        risk_info = {"method": "lcb", "z": risk["z"], "n_models": risk["n_models"]}
+    else:
+        candidates["value"] = model.score(X)
+        candidates["forecast"] = candidates["value"]
+        risk_info = {"method": "point"}
 
     c = Constraints(budget=budget, max_per_member=max_per_member)
     alloc = solve_ilp(candidates, c)
@@ -166,8 +199,11 @@ def build_bundle(
         "features_cutoff_week": cutoff_week,
         "offer_window_weeks": [cutoff_week, cutoff_week + 3],
         "constraints": {"budget": budget, "max_per_member": max_per_member},
+        "risk": risk_info,
         "plan": {
             **alloc.summary(),
+            # honest forecast of the plan's profit (the objective is risk-adjusted)
+            "forecast_profit": float(candidates.forecast[alloc.selected].sum()),
             "eligible_members": int(candidates.member_id.nunique()),
             "candidate_pairs": int(len(candidates)),
             "members_reached": int(candidates.loc[alloc.selected, "member_id"].nunique()),
@@ -180,6 +216,19 @@ def build_bundle(
         },
     }
     return Bundle(model, cost_model, candidates, manifest)
+
+
+def _load_risk() -> dict | None:
+    """Bootstrap ensemble + chosen risk level, if `python -m nectar.optimise.robust` was run."""
+    meta_path, bag_path = ROOT / "models" / "robust.json", ROOT / "models" / "bagged.joblib"
+    if not (meta_path.exists() and bag_path.exists()):
+        log.warning(
+            "Risk-aware plan unavailable (run python -m nectar.optimise.robust); "
+            "using point predictions"
+        )
+        return None
+    meta = json.loads(meta_path.read_text())
+    return {**meta, "bag": joblib.load(bag_path)}
 
 
 def main() -> None:
