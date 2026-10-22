@@ -1,6 +1,7 @@
 # Nectar Offer Engine
 
 [![ci](https://github.com/TilakHeble/nectar-offer-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/TilakHeble/nectar-offer-engine/actions/workflows/ci.yml)
+[![Live dashboard](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://nectar-offer.streamlit.app/)
 
 **Which loyalty members should get which personalised offer, so that each £ of discount buys the most *incremental* profit?**
 
@@ -9,7 +10,7 @@ An end-to-end, production-style project modelled on Sainsbury's **Nectar Prices*
 **Start here**
 - 📄 [Business case (2 pages)](docs/business_case.md): the problem, results and rollout plan, written for a commercial audience
 - 🧾 [Model card](docs/model_card.md): intended use, performance, fairness check, limitations, monitoring
-- 📊 Dashboard: `streamlit run dashboards/app.py` (or [deploy it free](#dashboard))
+- 📊 **[Live dashboard](https://nectar-offer.streamlit.app/)**: offer plan, model comparison, fairness and monitoring (first visit may take ~30 s to wake up)
 - 📓 Notebooks [01](notebooks/01_eda.ipynb) · [02](notebooks/02_segments_and_funnel.ipynb) · [03](notebooks/03_offer_experiment.ipynb) · [04](notebooks/04_uplift_models.ipynb) · [05](notebooks/05_offer_allocation.ipynb) · [06](notebooks/06_monitoring.ipynb)
 
 ```mermaid
@@ -245,7 +246,7 @@ make prefect-ui      # optional: Prefect dashboard of runs
 
 It reads only `dashboards/snapshot/`, about 76 KB of **aggregates** written by `python -m nectar.dashboard.snapshot`. No member-level rows, no raw data and no ML libraries are needed, so it is safe to host publicly.
 
-**Deploy free on Streamlit Community Cloud:** sign in at share.streamlit.io with GitHub → *Create app* → repository `TilakHeble/nectar-offer-engine`, branch `main`, main file `dashboards/app.py` → *Deploy*. It installs `dashboards/requirements.txt` and gives you a public link for your CV.
+**Live at [nectar-offer.streamlit.app](https://nectar-offer.streamlit.app/).** To deploy your own copy free on Streamlit Community Cloud: sign in at share.streamlit.io with GitHub → *Create app* → repository `TilakHeble/nectar-offer-engine`, branch `main`, main file `dashboards/app.py` → *Deploy*. It installs `dashboards/requirements.txt` and gives you a public link for your CV.
 
 ### Fairness check
 
