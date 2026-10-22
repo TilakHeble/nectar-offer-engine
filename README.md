@@ -201,12 +201,15 @@ make dbt-docs    # browse model documentation and lineage
 
 ### Windows (no `make`)
 
+Use **Python 3.12**. Brand-new Python releases (3.14+) may not have ready-made Windows packages for pyarrow and others yet, so pip tries to compile them and fails. `uv` gets the right version for you:
+
 ```powershell
 git clone https://github.com/TilakHeble/nectar-offer-engine.git
 cd nectar-offer-engine
-python -m venv .venv
-.venv\Scripts\activate          # if blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-pip install -e ".[dev,ml,serve]"
+uv venv --python 3.12             # or: py -3.12 -m venv .venv
+.venv\Scripts\Activate.ps1        # if blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+python --version                  # must print 3.12.x; the prompt should show the env name
+uv pip install -e ".[dev,ml,serve]"
 # copy the 8 Complete Journey CSVs into data\raw\
 python -m nectar.ingest.load_raw
 cd dbt; dbt build --profiles-dir .; cd ..
@@ -215,8 +218,13 @@ python -m nectar.models.train
 python -m nectar.optimise.run
 python -m nectar.serving.bundle
 pytest -q
-uvicorn nectar.serving.app:app      # then open http://localhost:8000/docs
+uvicorn nectar.serving.app:app      # then open http://127.0.0.1:8000/docs
 ```
+
+Troubleshooting:
+- **"Python was not found"**: the environment isn't active. Run `.venv\Scripts\Activate.ps1` in every new terminal.
+- **"Failed building wheel for pyarrow / pyyaml"**: the environment uses a Python that's too new. Recreate it with `--python 3.12`.
+- **API returns 503 "bundle not found"**: run the pipeline up to `nectar.serving.bundle`, then restart uvicorn. The API reads the bundle only at startup.
 
 ## Repository layout
 
