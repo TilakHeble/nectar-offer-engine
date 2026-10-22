@@ -1,9 +1,9 @@
-.PHONY: install ingest dbt dbt-docs simulate train optimise mlflow-ui bundle serve docker-build docker-run smoke benchmark pipeline pipeline-serve prefect-ui eda test lint all clean
+.PHONY: install ingest dbt dbt-docs simulate train optimise mlflow-ui bundle serve docker-build docker-run smoke benchmark pipeline pipeline-serve prefect-ui snapshot dashboard eda test lint all clean
 
 RAW_DIR ?= data/raw
 
 install:
-	pip install -e ".[dev,ml,serve,orchestrate]"
+	pip install -e ".[dev,ml,serve,orchestrate,dashboard]"
 
 ingest:
 	python -m nectar.ingest.load_raw --raw-dir $(RAW_DIR)
@@ -53,6 +53,12 @@ pipeline-serve:
 prefect-ui:
 	prefect server start
 
+snapshot:
+	python -m nectar.dashboard.snapshot
+
+dashboard:
+	streamlit run dashboards/app.py
+
 eda:
 	jupyter nbconvert --to notebook --execute --inplace notebooks/01_eda.ipynb
 	jupyter nbconvert --to notebook --execute --inplace notebooks/02_segments_and_funnel.ipynb
@@ -65,9 +71,9 @@ test:
 	pytest -q
 
 lint:
-	ruff check src tests
+	ruff check src tests dashboards
 
-all: ingest dbt simulate train optimise bundle test eda
+all: ingest dbt simulate train optimise pipeline snapshot test eda
 
 clean:
 	rm -rf data/processed/*.parquet data/warehouse/*.duckdb

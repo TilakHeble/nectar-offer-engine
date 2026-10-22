@@ -1,0 +1,30 @@
+{
+  "bundle_version": "20261022-092718-66eb1af",
+  "champion": "X-learner",
+  "features_cutoff_week": 102,
+  "constraints": {
+    "budget": 600.0,
+    "max_per_member": 3
+  },
+  "plan": {
+    "method": "ilp",
+    "offers_sent": 5056,
+    "predicted_profit": 365.18257213461027,
+    "expected_cost": 595.5363507591524,
+    "shadow_price": -0.0,
+    "eligible_members": 2421,
+    "candidate_pairs": 43578,
+    "members_reached": 2003
+  },
+  "model_test_metrics": {
+    "share_offered": 0.2754706533776301,
+    "observed_incremental_profit": 113.36775390851429,
+    "observed_auuc": -73.88286533427492,
+    "true_incremental_profit": 107.10886077502123,
+    "oracle_profit": 179.34330791951206,
+    "share_of_oracle": 0.5972280873903077,
+    "spearman_true_profit_uplift": 0.7916897510061278,
+    "spearman_true_conversion_uplift": 0.41343028061948434
+  },
+  "currency": "USD (Dunnhumby data is US grocery spend)"
+}

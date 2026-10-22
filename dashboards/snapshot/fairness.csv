@@ -1,0 +1,28 @@
+attribute,group,members,reach,offers_per_member,discount_per_member,judged,reach_ratio,flag
+age_group,Age Group1,46,0.652174,1.3913,0.149088,True,0.853755,False
+age_group,Age Group3,194,0.659794,1.46907,0.187374,True,0.86373,False
+age_group,Age Group5,59,0.677966,1.61017,0.256054,True,0.887519,False
+age_group,Age Group4,288,0.725694,1.62153,0.222982,True,0.95,False
+age_group,Age Group2,142,0.732394,1.59155,0.252288,True,0.958771,False
+age_group,Age Group6,72,0.763889,1.80556,0.209035,True,1,False
+income_level,Level12,11,0.363636,0.909091,0.0582322,False,0.457912,False
+income_level,Level9,30,0.566667,1.2,0.18549,True,0.71358,True
+income_level,Level8,38,0.578947,1.34211,0.179986,True,0.729045,True
+income_level,Level3,77,0.662338,1.55844,0.18643,True,0.834055,False
+income_level,Level1,61,0.721311,1.4918,0.174091,True,0.908318,False
+income_level,Level5,192,0.723958,1.63021,0.224082,True,0.911651,False
+income_level,Level4,172,0.726744,1.69186,0.26104,True,0.915159,False
+income_level,Level10,11,0.727273,1.18182,0.184651,False,0.915825,False
+income_level,Level6,96,0.729167,1.60417,0.226553,True,0.91821,False
+income_level,Level2,74,0.72973,1.60811,0.192792,True,0.918919,False
+income_level,Level7,34,0.794118,1.73529,0.233226,True,1,False
+income_level,Level11,5,1,2,0.298295,False,1.25926,False
+household_size,3,109,0.66055,1.40367,0.17772,True,0.882584,False
+household_size,5+,66,0.666667,1.65152,0.249826,True,0.890756,False
+household_size,4,53,0.679245,1.54717,0.295989,True,0.907563,False
+household_size,1,255,0.690196,1.50588,0.195013,True,0.922195,False
+household_size,2,318,0.748428,1.69497,0.226837,True,1,False
+kids,3+,69,0.652174,1.62319,0.24482,True,0.900775,False
+kids,1,114,0.666667,1.41228,0.182696,True,0.920792,False
+kids,2,60,0.683333,1.5,0.278632,True,0.943812,False
+kids,None/Unknown,558,0.724014,1.62007,0.213212,True,1,False

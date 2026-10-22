@@ -4,9 +4,29 @@
 
 **Which loyalty members should get which personalised offer, so that each £ of discount buys the most *incremental* profit?**
 
-An end-to-end, production-style project modelled on Sainsbury's **Nectar Prices**: real grocery transaction data, a randomised offer experiment layered on top, uplift models, a budget-constrained offer optimiser, a scoring API and monitoring.
+An end-to-end, production-style project modelled on Sainsbury's **Nectar Prices**: real grocery transactions, a randomised offer experiment on top, uplift models, a budget optimiser, an offer API in Docker, and a gated weekly pipeline with drift and fairness checks.
 
-> Status: **weeks 1–9 complete**: data pipeline, dbt warehouse, analysis, randomised offer experiment, uplift models with honest selection, a budget-constrained offer optimiser, a containerised offer API, and a gated weekly pipeline with drift monitoring.
+**Start here**
+- 📄 [Business case (2 pages)](docs/business_case.md): the problem, results and rollout plan, written for a commercial audience
+- 🧾 [Model card](docs/model_card.md): intended use, performance, fairness check, limitations, monitoring
+- 📊 Dashboard: `streamlit run dashboards/app.py` (or [deploy it free](#dashboard))
+- 📓 Notebooks [01](notebooks/01_eda.ipynb) · [02](notebooks/02_segments_and_funnel.ipynb) · [03](notebooks/03_offer_experiment.ipynb) · [04](notebooks/04_uplift_models.ipynb) · [05](notebooks/05_offer_allocation.ipynb) · [06](notebooks/06_monitoring.ipynb)
+
+```mermaid
+flowchart LR
+    A[Raw CSVs<br/>2,500 households] --> B[DuckDB + dbt<br/>14 models, 42 tests]
+    B --> C[Point-in-time features<br/>Pandera contract]
+    C --> D[Randomised offer<br/>experiment]
+    D --> E[Uplift models<br/>MLflow, honest selection]
+    E --> F[Weekly pipeline · Prefect]
+    C --> F
+    F -->|drift gate · PSI| G[Budget optimiser<br/>ILP, caps]
+    G -->|plan gate| H[Versioned bundle]
+    H --> I[FastAPI in Docker<br/>offers in ~3 ms]
+    H --> J[Dashboard<br/>Streamlit]
+```
+
+> Status: **all 10 weeks complete.** 106 tests and CI on every push (lint, dbt compile, tests, Docker build + container smoke test).
 
 ## Headline result
 
@@ -217,10 +237,35 @@ make pipeline-serve  # run on a schedule: Mondays 06:00
 make prefect-ui      # optional: Prefect dashboard of runs
 ```
 
+## Week 10: dashboard, model card and business case
+
+### Dashboard
+
+`dashboards/app.py` (Streamlit) has five tabs: **Overview** (the headline result and this cycle's plan), **Offer plan** (reach by segment, offers per member, by-offer table, budget curve), **Models** (comparison and uplift curves), **Fairness** (reach by customer group against the four-fifths rule) and **Monitoring** (drift history, latest check, pipeline runs).
+
+It reads only `dashboards/snapshot/`, about 76 KB of **aggregates** written by `python -m nectar.dashboard.snapshot`. No member-level rows, no raw data and no ML libraries are needed, so it is safe to host publicly.
+
+**Deploy free on Streamlit Community Cloud:** sign in at share.streamlit.io with GitHub → *Create app* → repository `TilakHeble/nectar-offer-engine`, branch `main`, main file `dashboards/app.py` → *Deploy*. It installs `dashboards/requirements.txt` and gives you a public link for your CV.
+
+### Fairness check
+
+`evaluate/fairness.py` compares how often each customer group receives at least one offer (reach), and flags any group below 80% of the best-reached group. The model uses no demographics, and they exist for 32% of households.
+
+| Attribute | Lowest reach vs best | Flagged |
+|---|---|---|
+| Age group | 0.85 | none |
+| Household size | 0.88 | none |
+| Children | 0.90 | none |
+| Income level | 0.71 | Levels 8 and 9 (30–38 members each: a review item, not proof; see the [model card](docs/model_card.md#fairness)) |
+
+### Write-ups
+- [Business case](docs/business_case.md): problem, results in money terms, a live A/B rollout design, risks and controls
+- [Model card](docs/model_card.md): intended and out-of-scope use, performance, fairness, limitations, monitoring
+
 ## Quick start
 
 ```bash
-pip install -e ".[dev,ml,serve,orchestrate]"
+pip install -e ".[dev,ml,serve,orchestrate,dashboard]"
 # put the 8 Complete Journey CSVs in data/raw/
 make ingest      # CSV -> typed Parquet + DuckDB warehouse (~20s)
 make dbt         # build and test the staging + mart models (~10s)
@@ -229,6 +274,8 @@ make train       # train, compare and select models, log to MLflow (~1 min)
 make optimise    # allocate offers under a $150 budget (test members)
 make bundle      # weekly serving bundle for all members ($600, max 3 each)
 make pipeline    # the gated weekly cycle: features -> drift check -> plan -> publish
+make snapshot    # refresh the dashboard's aggregated data
+make dashboard   # open the dashboard
 make serve       # run the API locally
 make mlflow-ui   # browse experiment runs
 make test        # data-quality contract, mart checks, unit tests
@@ -246,7 +293,7 @@ cd nectar-offer-engine
 uv venv --python 3.12             # or: py -3.12 -m venv .venv
 .venv\Scripts\Activate.ps1        # if blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 python --version                  # must print 3.12.x; the prompt should show the env name
-uv pip install -e ".[dev,ml,serve,orchestrate]"
+uv pip install -e ".[dev,ml,serve,orchestrate,dashboard]"
 # copy the 8 Complete Journey CSVs into data\raw\
 python -m nectar.ingest.load_raw
 cd dbt; dbt build --profiles-dir .; cd ..
@@ -255,6 +302,8 @@ python -m nectar.models.train
 python -m nectar.pipeline.weekly    # drift check + plan + publish (or --no-prefect)
 pytest -q
 uvicorn nectar.serving.app:app      # then open http://127.0.0.1:8000/docs
+python -m nectar.dashboard.snapshot # refresh dashboard data, then:
+streamlit run dashboards/app.py
 ```
 
 Troubleshooting:
@@ -273,19 +322,21 @@ Troubleshooting:
 │   ├── simulate/simulator.py        # randomised experiment with known ground truth
 │   ├── features/schema.py           # Pandera feature contract + model matrix
 │   ├── models/learners.py, train.py # uplift learners, training + selection + MLflow
-│   ├── evaluate/metrics.py          # IPW policy value, uplift curves, oracle share
+│   ├── evaluate/metrics.py, fairness.py # IPW policy value, uplift curves, oracle share; group reach
 │   ├── optimise/                    # cost model, ILP + greedy allocation, CLI
 │   ├── serving/                     # bundle (batch job), FastAPI app, demo bundle, smoke + benchmark
 │   ├── monitoring/drift.py          # PSI drift profile, comparison, HTML report
 │   ├── pipeline/weekly.py           # Prefect flow: gates, publish, run records
+│   ├── dashboard/snapshot.py        # aggregated export for the dashboard
 ├── dbt/                     # staging, facts, dims, RFM mart + 42 data tests
 ├── notebooks/               # 01 EDA · 02 segments & funnel · 03 experiment · 04 uplift models · 05 allocation · 06 monitoring
-├── tests/                   # data quality, marts, simulator, schema, metrics, learners, optimiser, API, drift, pipeline (101)
+├── tests/                   # data, marts, simulator, schema, metrics, learners, optimiser, API, drift, pipeline, fairness, dashboard (106)
 ├── Dockerfile, docker-compose.yml, docker/requirements-serve.txt
 ├── models/                  # champion.json, model_comparison.csv, reference_profile.json (+ champion.joblib, generated)
 ├── reports/figures/         # charts used in README and write-up
 ├── runs/, artifacts_history/ # generated: run records and archived bundles
-├── dashboards/ docs/
+├── dashboards/              # Streamlit app + committed aggregate snapshot
+├── docs/                    # business case, model card
 └── .github/workflows/ci.yml # ruff + dbt parse + pytest, then Docker build + container smoke test
 ```
 
@@ -302,8 +353,8 @@ Troubleshooting:
 | 7 ✅ | Budget-constrained offer optimiser |
 | 8 ✅ | FastAPI offer API in Docker, versioned bundle, CI container test |
 | 9 ✅ | Gated weekly Prefect pipeline, PSI drift monitoring, auto-reloading API |
-| 10 | Dashboards, model card, business write-up |
+| 10 ✅ | Streamlit dashboard, fairness check, model card, business case |
 
 ## Tech stack
 
-Python · SQL · DuckDB · Parquet · dbt · scikit-learn · LightGBM · EconML · Pandera · MLflow · PuLP · FastAPI · Docker · Prefect · GitHub Actions
+Python · SQL · DuckDB · Parquet · dbt · scikit-learn · LightGBM · EconML · Pandera · MLflow · PuLP · FastAPI · Docker · Prefect · Streamlit · Altair · GitHub Actions

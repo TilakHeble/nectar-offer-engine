@@ -13,8 +13,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -e ".[dev,ml,serve]"
-      - run: ruff check src tests
+      - run: pip install -e ".[dev,ml,serve,dashboard]"
+      - run: ruff check src tests dashboards
       - name: dbt parse (compiles every model and test without data)
         run: cd dbt && dbt parse --profiles-dir .
         env:
