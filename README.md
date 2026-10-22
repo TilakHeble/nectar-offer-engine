@@ -1,5 +1,7 @@
 # Nectar Offer Engine
 
+[![ci](https://github.com/TilakHeble/nectar-offer-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/TilakHeble/nectar-offer-engine/actions/workflows/ci.yml)
+
 **Which loyalty members should get which personalised offer, so that each £ of discount buys the most *incremental* profit?**
 
 An end-to-end, production-style project modelled on Sainsbury's **Nectar Prices**: real grocery transaction data, a randomised offer experiment layered on top, uplift models, a budget-constrained offer optimiser, a scoring API and monitoring.
