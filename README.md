@@ -6,7 +6,7 @@
 
 An end-to-end, production-style project modelled on Sainsbury's **Nectar Prices**: real grocery transaction data, a randomised offer experiment layered on top, uplift models, a budget-constrained offer optimiser, a scoring API and monitoring.
 
-> Status: **weeks 1–8 complete**: data pipeline, dbt warehouse, analysis, randomised offer experiment, uplift models with honest selection, a budget-constrained offer optimiser, and a containerised offer API.
+> Status: **weeks 1–9 complete**: data pipeline, dbt warehouse, analysis, randomised offer experiment, uplift models with honest selection, a budget-constrained offer optimiser, a containerised offer API, and a gated weekly pipeline with drift monitoring.
 
 ## Headline result
 
@@ -181,10 +181,46 @@ make smoke         # call every endpoint
 make benchmark     # latency percentiles
 ```
 
+## Week 9: the weekly pipeline and drift monitoring
+
+One command runs the whole offer cycle, with gates that stop a bad plan before it reaches customers. When a gate fails, the live plan stays in place.
+
+| Step | What it does | Gate |
+|---|---|---|
+| refresh *(optional)* | reload raw data, rebuild the dbt warehouse | dbt tests must pass |
+| features | point-in-time features at the cutoff | Pandera feature contract |
+| drift | PSI of every feature and of the model's predictions against the training population; HTML + JSON report | **ALERT blocks**; WARN publishes and flags retraining |
+| plan | score with the champion, allocate under the budget (ILP) | budget, per-member cap, no loss-making offers, plan size within ±50% of the live plan |
+| publish | atomic bundle swap + archive in `artifacts_history/` | — |
+
+- **Orchestrated with Prefect** (retries, logs, run UI, `--serve` for a Monday 06:00 schedule). `--no-prefect` runs the same steps as plain Python.
+- **Every run is recorded** in `runs/<run_id>/` (status, steps, timings, drift report) and in `runs/history.csv`.
+- **The API switches to a new plan by itself.** Each worker process checks the bundle's manifest every 5 seconds and reloads when it changes, so no restart is needed. A reload endpoint would only have reached one of the workers. A bundle that fails to load is ignored, and the previous one keeps serving.
+
+**Drift monitoring** (`monitoring/drift.py`) uses the Population Stability Index, the standard check in credit-risk model monitoring: under 0.10 is stable, 0.10–0.25 is a warning, and 0.25 or more is an alert. The training population is stored as a compact profile (bin edges + proportions), so monitoring never needs the training data itself.
+
+![Drift history](reports/figures/24_drift_history.png)
+
+| Finding | Detail |
+|---|---|
+| The live population is stable | Largest PSI 0.012 at week 102; every cutoff from week 62 onwards is OK |
+| Shocks are caught | Simulated cost-of-living squeeze: 10% stays within normal variation, 15% raises a WARN, and 20% or more raises an ALERT that blocks publication |
+| Drift would change decisions | At a 30% squeeze, the share of member-offer pairs the model would offer rises from 28% to 45% |
+| Monitoring found two real bugs on day one | A "weeks since last purchase" placeholder tied to the window length (it grew every week), and float sums that DuckDB adds up in parallel, which made features non-reproducible. Both are fixed: a fixed 75-week cap and exact decimal sums. Training data is unchanged (max difference 5e-13) and the published plan is identical |
+| PSI has sampling noise | About (bins − 1) / n members: around 0.01 at 2,400 members, but a few hundred members can cross 0.10 by chance, so small segments need wider thresholds |
+
+Full analysis: [`notebooks/06_monitoring.ipynb`](notebooks/06_monitoring.ipynb).
+
+```bash
+make pipeline        # one weekly cycle (Prefect)
+make pipeline-serve  # run on a schedule: Mondays 06:00
+make prefect-ui      # optional: Prefect dashboard of runs
+```
+
 ## Quick start
 
 ```bash
-pip install -e ".[dev,ml,serve]"
+pip install -e ".[dev,ml,serve,orchestrate]"
 # put the 8 Complete Journey CSVs in data/raw/
 make ingest      # CSV -> typed Parquet + DuckDB warehouse (~20s)
 make dbt         # build and test the staging + mart models (~10s)
@@ -192,6 +228,7 @@ make simulate    # generate the randomised offer experiment (~6s)
 make train       # train, compare and select models, log to MLflow (~1 min)
 make optimise    # allocate offers under a $150 budget (test members)
 make bundle      # weekly serving bundle for all members ($600, max 3 each)
+make pipeline    # the gated weekly cycle: features -> drift check -> plan -> publish
 make serve       # run the API locally
 make mlflow-ui   # browse experiment runs
 make test        # data-quality contract, mart checks, unit tests
@@ -209,14 +246,13 @@ cd nectar-offer-engine
 uv venv --python 3.12             # or: py -3.12 -m venv .venv
 .venv\Scripts\Activate.ps1        # if blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 python --version                  # must print 3.12.x; the prompt should show the env name
-uv pip install -e ".[dev,ml,serve]"
+uv pip install -e ".[dev,ml,serve,orchestrate]"
 # copy the 8 Complete Journey CSVs into data\raw\
 python -m nectar.ingest.load_raw
 cd dbt; dbt build --profiles-dir .; cd ..
 python -m nectar.simulate.simulator
 python -m nectar.models.train
-python -m nectar.optimise.run
-python -m nectar.serving.bundle
+python -m nectar.pipeline.weekly    # drift check + plan + publish (or --no-prefect)
 pytest -q
 uvicorn nectar.serving.app:app      # then open http://127.0.0.1:8000/docs
 ```
@@ -224,7 +260,8 @@ uvicorn nectar.serving.app:app      # then open http://127.0.0.1:8000/docs
 Troubleshooting:
 - **"Python was not found"**: the environment isn't active. Run `.venv\Scripts\Activate.ps1` in every new terminal.
 - **"Failed building wheel for pyarrow / pyyaml"**: the environment uses a Python that's too new. Recreate it with `--python 3.12`.
-- **API returns 503 "bundle not found"**: run the pipeline up to `nectar.serving.bundle`, then restart uvicorn. The API reads the bundle only at startup.
+- **API returns 503 "bundle not found"**: run `python -m nectar.pipeline.weekly`. A running API picks up the new bundle within about 5 seconds.
+- **Pipeline status "blocked"**: a safety gate stopped it. The reason is in `runs\<run_id>\run.json`, and the drift report is in `drift_report.html` in the same folder.
 
 ## Repository layout
 
@@ -239,14 +276,16 @@ Troubleshooting:
 │   ├── evaluate/metrics.py          # IPW policy value, uplift curves, oracle share
 │   ├── optimise/                    # cost model, ILP + greedy allocation, CLI
 │   ├── serving/                     # bundle (batch job), FastAPI app, demo bundle, smoke + benchmark
-│   ├── monitoring/                  # upcoming
+│   ├── monitoring/drift.py          # PSI drift profile, comparison, HTML report
+│   ├── pipeline/weekly.py           # Prefect flow: gates, publish, run records
 ├── dbt/                     # staging, facts, dims, RFM mart + 42 data tests
-├── notebooks/               # 01 EDA · 02 segments & funnel · 03 experiment · 04 uplift models · 05 allocation
-├── tests/                   # data quality, marts, simulator, schema, metrics, learners, optimiser, API (78)
+├── notebooks/               # 01 EDA · 02 segments & funnel · 03 experiment · 04 uplift models · 05 allocation · 06 monitoring
+├── tests/                   # data quality, marts, simulator, schema, metrics, learners, optimiser, API, drift, pipeline (101)
 ├── Dockerfile, docker-compose.yml, docker/requirements-serve.txt
-├── models/                  # champion.json, model_comparison.csv (+ champion.joblib, generated)
+├── models/                  # champion.json, model_comparison.csv, reference_profile.json (+ champion.joblib, generated)
 ├── reports/figures/         # charts used in README and write-up
-├── pipelines/ dashboards/ docs/
+├── runs/, artifacts_history/ # generated: run records and archived bundles
+├── dashboards/ docs/
 └── .github/workflows/ci.yml # ruff + dbt parse + pytest, then Docker build + container smoke test
 ```
 
@@ -262,9 +301,9 @@ Troubleshooting:
 | 6 ✅ | S / X / DR-learner, causal forest, ensemble, uplift and profit curves (**v1**) |
 | 7 ✅ | Budget-constrained offer optimiser |
 | 8 ✅ | FastAPI offer API in Docker, versioned bundle, CI container test |
-| 9 | Prefect pipeline, CI/CD, drift monitoring |
+| 9 ✅ | Gated weekly Prefect pipeline, PSI drift monitoring, auto-reloading API |
 | 10 | Dashboards, model card, business write-up |
 
 ## Tech stack
 
-Python · SQL · DuckDB · Parquet · dbt · scikit-learn · LightGBM · EconML · Pandera · MLflow · PuLP · FastAPI · Docker · Prefect · Evidently · GitHub Actions
+Python · SQL · DuckDB · Parquet · dbt · scikit-learn · LightGBM · EconML · Pandera · MLflow · PuLP · FastAPI · Docker · Prefect · GitHub Actions

@@ -1,9 +1,9 @@
-.PHONY: install ingest dbt dbt-docs simulate train optimise mlflow-ui eda test lint all clean
+.PHONY: install ingest dbt dbt-docs simulate train optimise mlflow-ui bundle serve docker-build docker-run smoke benchmark pipeline pipeline-serve prefect-ui eda test lint all clean
 
 RAW_DIR ?= data/raw
 
 install:
-	pip install -e ".[dev,ml,serve]"
+	pip install -e ".[dev,ml,serve,orchestrate]"
 
 ingest:
 	python -m nectar.ingest.load_raw --raw-dir $(RAW_DIR)
@@ -44,12 +44,22 @@ smoke:
 benchmark:
 	python -m nectar.serving.benchmark --url http://localhost:8000
 
+pipeline:
+	python -m nectar.pipeline.weekly
+
+pipeline-serve:
+	python -m nectar.pipeline.weekly --serve
+
+prefect-ui:
+	prefect server start
+
 eda:
 	jupyter nbconvert --to notebook --execute --inplace notebooks/01_eda.ipynb
 	jupyter nbconvert --to notebook --execute --inplace notebooks/02_segments_and_funnel.ipynb
 	jupyter nbconvert --to notebook --execute --inplace notebooks/03_offer_experiment.ipynb
 	jupyter nbconvert --to notebook --execute --inplace notebooks/04_uplift_models.ipynb
 	jupyter nbconvert --to notebook --execute --inplace notebooks/05_offer_allocation.ipynb
+	jupyter nbconvert --to notebook --execute --inplace notebooks/06_monitoring.ipynb
 
 test:
 	pytest -q

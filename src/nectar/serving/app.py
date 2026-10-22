@@ -98,6 +98,16 @@ class MemberOffers(BaseModel):
 # ---------- app ----------
 
 
+RELOAD_CHECK_SECONDS = float(os.environ.get("NECTAR_RELOAD_CHECK_SECONDS", "5"))
+
+
+def _manifest_mtime(path: Path) -> float | None:
+    try:
+        return (path / "manifest.json").stat().st_mtime
+    except OSError:
+        return None
+
+
 def _load(path: Path) -> tuple[Bundle | None, str | None]:
     try:
         return Bundle.load(path), None
@@ -110,6 +120,9 @@ def _load(path: Path) -> tuple[Bundle | None, str | None]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     path = Path(os.environ.get("NECTAR_ARTIFACTS_DIR", DEFAULT_DIR))
+    app.state.artifacts_dir = path
+    app.state.bundle_mtime = _manifest_mtime(path)
+    app.state.last_check = time.monotonic()
     app.state.bundle, app.state.load_error = _load(path)
     if app.state.bundle:
         log.info("Loaded bundle %s from %s", app.state.bundle.manifest["bundle_version"], path)
@@ -126,8 +139,33 @@ app = FastAPI(
 )
 
 
+def maybe_reload(state) -> None:
+    """Pick up a newly published bundle without a restart.
+
+    Each worker process checks the manifest's modification time at most every few seconds
+    (one stat call), so every worker switches over on its own: a reload endpoint would reach
+    only the one worker that received the request. A bundle that fails to load is ignored and
+    the previous one keeps serving.
+    """
+    now = time.monotonic()
+    if now - state.last_check < RELOAD_CHECK_SECONDS:
+        return
+    state.last_check = now
+    mtime = _manifest_mtime(state.artifacts_dir)
+    if mtime is None or mtime == state.bundle_mtime:
+        return
+    new, error = _load(state.artifacts_dir)
+    if new is None:
+        log.error("New bundle failed to load, keeping the current one: %s", error)
+        return
+    old = state.bundle.manifest["bundle_version"] if state.bundle else None
+    state.bundle, state.load_error, state.bundle_mtime = new, None, mtime
+    log.info("Reloaded bundle %s (was %s)", new.manifest["bundle_version"], old)
+
+
 @app.middleware("http")
 async def timing(request: Request, call_next):
+    maybe_reload(request.app.state)
     start = time.perf_counter()
     response = await call_next(request)
     ms = (time.perf_counter() - start) * 1000

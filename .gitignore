@@ -29,3 +29,5 @@ models/*.joblib
 artifacts/
 artifacts.tmp/
 build/
+runs/
+artifacts_history/

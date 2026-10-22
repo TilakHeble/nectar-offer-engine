@@ -51,6 +51,11 @@ OFFERS: list[Offer] = [
 
 FIRST_STABLE_WEEK = 17
 ACTIVE_LOOKBACK_WEEKS = 26  # eligible members shopped in the last 26 weeks before the cutoff
+# "Weeks since last category purchase" is capped at a fixed horizon, and members who never
+# bought the category get the cap. The cap used to be the feature-window length, which grows
+# every week, so the never-bought value crept upward and showed as drift (found by the drift
+# monitor). 75 = the training window (weeks 17-91), so training features are unchanged.
+WEEKS_SINCE_CAP = 75
 
 
 def offers_frame(offers: list[Offer] = OFFERS) -> pd.DataFrame:
@@ -72,6 +77,8 @@ def build_offer_features(
     con.register("offers", offers_frame(offers))
     lo, hi = FIRST_STABLE_WEEK, cutoff_week - 1
     n_weeks = hi - lo + 1
+    D = "DECIMAL(18,6)"  # exact money sums (see the note at the end of this function)
+    cap = WEEKS_SINCE_CAP
     sql = f"""
     WITH base AS (
         SELECT * FROM marts.fct_basket WHERE week_no BETWEEN {lo} AND {hi}
@@ -79,10 +86,12 @@ def build_offer_features(
     member AS (
         SELECT member_id,
                COUNT(*) / {n_weeks}.0                        AS m_trips_per_week,
-               SUM(basket_value) / {n_weeks}.0               AS m_spend_per_week,
+               SUM(basket_value::{D}) / {n_weeks}.0               AS m_spend_per_week,
                {hi} - MAX(week_no)                           AS m_weeks_since_last_trip,
-               SUM(member_discount) / SUM(shelf_value)       AS m_member_discount_rate,
-               SUM(basket_value * private_label_share) / SUM(basket_value) AS m_private_label_share,
+               SUM(member_discount::{D}) / SUM(shelf_value::{D})
+                                                             AS m_member_discount_rate,
+               SUM((basket_value * private_label_share)::{D}) / SUM(basket_value::{D})
+                                                             AS m_private_label_share,
                MEDIAN(basket_value)                          AS m_median_basket,
                COUNT(*) FILTER (WHERE week_no > {hi} - 13) / 13.0 AS m_trips_per_week_13w
         FROM base GROUP BY 1
@@ -97,8 +106,8 @@ def build_offer_features(
         SELECT member_id, offer_id,
                COUNT(DISTINCT basket_id)                     AS c_trips,
                COUNT(DISTINCT basket_id) FILTER (WHERE week_no > {hi} - 13) AS c_trips_13w,
-               SUM(sales_value) / {n_weeks}.0                AS c_spend_per_week,
-               SUM(sales_value) / COUNT(DISTINCT basket_id)  AS c_spend_per_trip,
+               SUM(sales_value::{D}) / {n_weeks}.0                AS c_spend_per_week,
+               SUM(sales_value::{D}) / COUNT(DISTINCT basket_id)  AS c_spend_per_trip,
                {hi} - MAX(week_no)                           AS c_weeks_since_last,
                AVG((member_discount > 0)::INT)               AS c_discount_line_share
         FROM lines GROUP BY 1, 2
@@ -109,7 +118,8 @@ def build_offer_features(
         FROM base GROUP BY 1
     ),
     offer_level AS (
-        SELECT offer_id, SUM(sales_value) / COUNT(DISTINCT basket_id) AS o_spend_per_trip
+        SELECT offer_id,
+               SUM(sales_value::{D}) / COUNT(DISTINCT basket_id) AS o_spend_per_trip
         FROM lines GROUP BY 1
     )
     SELECT
@@ -121,7 +131,7 @@ def build_offer_features(
         COALESCE(c.c_trips_13w, 0) / GREATEST(mt.trips_13w, 1)        AS c_trip_share_13w,
         COALESCE(c.c_spend_per_week, 0)                               AS c_spend_per_week,
         COALESCE(c.c_spend_per_trip, ol.o_spend_per_trip)             AS c_spend_per_trip,
-        COALESCE(c.c_weeks_since_last, {n_weeks})                     AS c_weeks_since_last,
+        LEAST(COALESCE(c.c_weeks_since_last, {cap}), {cap})          AS c_weeks_since_last,
         COALESCE(c.c_discount_line_share, m.m_member_discount_rate)   AS c_discount_line_share,
         (c.c_trips IS NOT NULL)                                       AS c_ever_bought,
         ol.o_spend_per_trip
@@ -137,6 +147,13 @@ def build_offer_features(
     if own:
         con.close()
     df["c_ever_bought"] = df.c_ever_bought.astype(bool)
+    # Money is summed as DECIMAL above: DuckDB sums floats in parallel, so float totals can
+    # differ in the last bits between runs and flip values across bin edges. Exact decimal
+    # sums make features bit-for-bit reproducible (identical inputs -> identical plans).
+    floats = df.select_dtypes(include=["float", "object"]).columns.intersection(
+        [c for c in df.columns if c.startswith(("m_", "c_", "o_"))]
+    )
+    df[floats] = df[floats].astype(float)
     return df
 
 

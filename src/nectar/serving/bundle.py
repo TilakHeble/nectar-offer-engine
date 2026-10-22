@@ -124,9 +124,17 @@ def _git_sha() -> str:
 
 
 def build_bundle(
-    budget: float, max_per_member: int, cutoff_week: int = LATEST_CUTOFF_WEEK, seed: int = 0
+    budget: float,
+    max_per_member: int,
+    cutoff_week: int = LATEST_CUTOFF_WEEK,
+    seed: int = 0,
+    features: pd.DataFrame | None = None,
 ) -> Bundle:
-    """Score every eligible member at `cutoff_week` and allocate offers under the constraints."""
+    """Score every eligible member at `cutoff_week` and allocate offers under the constraints.
+
+    Pass `features` (already built and validated, e.g. by the weekly pipeline) to skip
+    rebuilding them.
+    """
     from nectar.models.train import load_experiment, split_by_member
     from nectar.optimise.allocate import Constraints, solve_ilp
     from nectar.optimise.cost_model import DiscountCostModel
@@ -139,7 +147,8 @@ def build_bundle(
     exp["split"] = split_by_member(exp, seed)
     cost_model = DiscountCostModel().fit(exp[exp.split == "train"])
 
-    features = validate_features(build_offer_features(cutoff_week))
+    if features is None:
+        features = validate_features(build_offer_features(cutoff_week))
     candidates = features[["member_id", "offer_id", "commodity", "discount_pct"]].copy()
     candidates["value"] = model.score(model_matrix(features))
     candidates["cost"] = cost_model.predict(features)
