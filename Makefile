@@ -1,4 +1,4 @@
-.PHONY: install ingest dbt dbt-docs simulate train mlflow-ui eda test lint all clean
+.PHONY: install ingest dbt dbt-docs simulate train optimise mlflow-ui eda test lint all clean
 
 RAW_DIR ?= data/raw
 
@@ -20,6 +20,9 @@ simulate:
 train:
 	python -m nectar.models.train
 
+optimise:
+	python -m nectar.optimise.run --budget 150 --max-per-member 99
+
 mlflow-ui:
 	mlflow ui --backend-store-uri sqlite:///mlflow.db
 
@@ -28,6 +31,7 @@ eda:
 	jupyter nbconvert --to notebook --execute --inplace notebooks/02_segments_and_funnel.ipynb
 	jupyter nbconvert --to notebook --execute --inplace notebooks/03_offer_experiment.ipynb
 	jupyter nbconvert --to notebook --execute --inplace notebooks/04_uplift_models.ipynb
+	jupyter nbconvert --to notebook --execute --inplace notebooks/05_offer_allocation.ipynb
 
 test:
 	pytest -q
@@ -35,7 +39,7 @@ test:
 lint:
 	ruff check src tests
 
-all: ingest dbt simulate train test eda
+all: ingest dbt simulate train optimise test eda
 
 clean:
 	rm -rf data/processed/*.parquet data/warehouse/*.duckdb

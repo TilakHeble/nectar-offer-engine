@@ -6,7 +6,7 @@
 
 An end-to-end, production-style project modelled on Sainsbury's **Nectar Prices**: real grocery transaction data, a randomised offer experiment layered on top, uplift models, a budget-constrained offer optimiser, a scoring API and monitoring.
 
-> Status: **v1 (weeks 1–6) complete** — data pipeline, dbt warehouse, analysis, randomised offer experiment, and six targeting models compared with honest model selection.
+> Status: **weeks 1–7 complete**: data pipeline, dbt warehouse, analysis, randomised offer experiment, uplift models with honest selection, and a budget-constrained offer optimiser.
 
 ## Headline result
 
@@ -124,6 +124,26 @@ Full validation: [`notebooks/03_offer_experiment.ipynb`](notebooks/03_offer_expe
 
 Full analysis: [`notebooks/04_uplift_models.ipynb`](notebooks/04_uplift_models.ipynb).
 
+## Week 7: budget-constrained offer allocation
+
+Model scores say which offers pay; the optimiser (`optimise/`) decides which to **send** under business limits:
+
+- **value** = champion's predicted incremental profit; **cost** = predicted retailer-funded discount cost from a separate cost model (totals within 2–5% of the truth).
+- **Integer programme** (PuLP + CBC): maximise value subject to a discount budget, a per-member cap and optional per-offer (supplier) caps; never send a loss-making pair. A value-per-$ greedy rule is the fallback.
+- The **shadow price** of the budget (from the LP relaxation) gives the predicted profit of one more $1 of budget.
+
+![Budget curves](reports/figures/19_budget_curves.png)
+
+| Finding (test set, 602 members, one 4-week cycle) | Implication |
+|---|---|
+| True profit peaks at a $200 budget (+$120) and then falls | A budget limits the damage from model error; more budget is not always better |
+| Capping offers at 3 per member keeps only 42% of uncapped profit at $100 | Persuadable members respond in many categories; the cap is a business cost to quantify |
+| With caps, the ILP earns +$37 where the greedy rule loses $6 (at $100) | Exact optimisation is worth it and solves in under a second |
+| The plan predicts 34% more profit than it really delivers (at $100) | Optimiser's curse: measure plan impact on a randomised holdout |
+| Recommended $150 plan: 2,066 offers to 420 members, +$113 true profit | Offers go mostly to lapsed and occasional buyers; Champions (26% of members) get 8% of offers |
+
+Full analysis: [`notebooks/05_offer_allocation.ipynb`](notebooks/05_offer_allocation.ipynb).
+
 ## Quick start
 
 ```bash
@@ -133,10 +153,28 @@ make ingest      # CSV -> typed Parquet + DuckDB warehouse (~20s)
 make dbt         # build and test the staging + mart models (~10s)
 make simulate    # generate the randomised offer experiment (~6s)
 make train       # train, compare and select models, log to MLflow (~1 min)
+make optimise    # allocate offers under a $150 budget
 make mlflow-ui   # browse experiment runs
 make test        # data-quality contract, mart checks, unit tests
 make eda         # re-run the analysis notebooks
 make dbt-docs    # browse model documentation and lineage
+```
+
+### Windows (no `make`)
+
+```powershell
+git clone https://github.com/TilakHeble/nectar-offer-engine.git
+cd nectar-offer-engine
+python -m venv .venv
+.venv\Scripts\activate          # if blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+pip install -e ".[dev,ml]"
+# copy the 8 Complete Journey CSVs into data\raw\
+python -m nectar.ingest.load_raw
+cd dbt; dbt build --profiles-dir .; cd ..
+python -m nectar.simulate.simulator
+python -m nectar.models.train
+python -m nectar.optimise.run
+pytest -q
 ```
 
 ## Repository layout
@@ -150,10 +188,11 @@ make dbt-docs    # browse model documentation and lineage
 │   ├── features/schema.py           # Pandera feature contract + model matrix
 │   ├── models/learners.py, train.py # uplift learners, training + selection + MLflow
 │   ├── evaluate/metrics.py          # IPW policy value, uplift curves, oracle share
-│   ├── optimise/ serving/ monitoring/   # upcoming weeks
+│   ├── optimise/                    # cost model, ILP + greedy allocation, CLI
+│   ├── serving/ monitoring/         # upcoming weeks
 ├── dbt/                     # staging, facts, dims, RFM mart + 42 data tests
-├── notebooks/               # 01 EDA · 02 segments & funnel · 03 experiment · 04 uplift models
-├── tests/                   # data quality, marts, simulator, schema, metrics, learners (55)
+├── notebooks/               # 01 EDA · 02 segments & funnel · 03 experiment · 04 uplift models · 05 allocation
+├── tests/                   # data quality, marts, simulator, schema, metrics, learners, optimiser (63)
 ├── models/                  # champion.json, model_comparison.csv (+ champion.joblib, generated)
 ├── reports/figures/         # charts used in README and write-up
 ├── pipelines/ dashboards/ docs/
@@ -170,11 +209,11 @@ make dbt-docs    # browse model documentation and lineage
 | 4 ✅ | Feature pipeline with validation, member-level split |
 | 5 ✅ | Response-model baseline + T-learner, MLflow tracking |
 | 6 ✅ | S / X / DR-learner, causal forest, ensemble, uplift and profit curves (**v1**) |
-| 7 | Budget-constrained offer optimiser |
+| 7 ✅ | Budget-constrained offer optimiser |
 | 8 | FastAPI scoring service in Docker |
 | 9 | Prefect pipeline, CI/CD, drift monitoring |
 | 10 | Dashboards, model card, business write-up |
 
 ## Tech stack
 
-Python · SQL · DuckDB · Parquet · dbt · scikit-learn · LightGBM · EconML / CausalML · MLflow · PuLP · FastAPI · Docker · Prefect · Evidently · GitHub Actions
+Python · SQL · DuckDB · Parquet · dbt · scikit-learn · LightGBM · EconML · Pandera · MLflow · PuLP · FastAPI · Docker · Prefect · Evidently · GitHub Actions
